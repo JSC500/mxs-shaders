@@ -2,7 +2,15 @@
 setlocal
 cd /d "%~dp0"
 
-if not defined VSCMD_VER call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
+if defined VSCMD_VER goto :have_vs
+set "VSDIR="
+for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+if not defined VSDIR (
+	echo error: Visual Studio with the C++ build tools was not found
+	exit /b 1
+)
+call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
+:have_vs
 
 if not exist build\gen mkdir build\gen
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\gen_exports.ps1 -OutDir build\gen -Hooks src\static_hooks.txt || exit /b 1
