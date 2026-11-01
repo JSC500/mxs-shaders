@@ -220,7 +220,7 @@ static GLuint g_bound_tex;
 /* --- settings and redirected framebuffer --- */
 
 static int g_cfg_gl_major, g_cfg_gl_minor, g_cfg_msaa, g_cfg_aniso, g_cfg_gl_debug, g_cfg_debug;
-static float g_aniso;
+static float g_aniso, g_aniso_setting;
 static unsigned g_aniso_count;
 static HGLRC g_main_rc;
 static GLuint g_fbo, g_fbo_color, g_fbo_depth, g_present_fbo, g_present_color;
@@ -230,9 +230,9 @@ static wchar_t g_cfg_pack[64];
 static BOOL g_hud_phase;
 static int g_hud_boxes, g_hud_boxes_last;
 static BOOL g_cursor_hidden;
-static BOOL g_reload_requested;	/* from the panel, done at the frame boundary */
+static BOOL g_reload_requested, g_enabled_changed;	/* from the panel, done at the frame boundary */
 static int g_cfg_fog, g_cfg_parallax, g_cfg_motion_blur, g_cfg_dof, g_cfg_saturation, g_cfg_contrast, g_cfg_split_tone;
-static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_time_of_day, g_cfg_ui_key;
+static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_time_of_day, g_cfg_ui_key, g_cfg_enabled;
 
 typedef void (WINAPI *glGenObjects_t)(GLsizei, GLuint *);
 typedef void (WINAPI *glDeleteObjects_t)(GLsizei, const GLuint *);
@@ -299,6 +299,7 @@ typedef void (WINAPI *glDeleteShader_t)(GLuint);
 typedef GLuint (WINAPI *glCreateProgram_t)(void);
 typedef void (WINAPI *glDeleteProgram_t)(GLuint);
 typedef GLboolean (WINAPI *glIsProgram_t)(GLuint);
+typedef GLboolean (WINAPI *glIsTexture_t)(GLuint);
 
 typedef void (WINAPI *glUniform1i_t)(GLint, GLint);
 typedef void (WINAPI *glUniform1f_t)(GLint, float);
@@ -317,6 +318,7 @@ static glDeleteShader_t my_glDeleteShader;
 static glCreateProgram_t my_glCreateProgram;
 static glDeleteProgram_t my_glDeleteProgram;
 static glIsProgram_t my_glIsProgram;
+static glIsTexture_t my_glIsTexture;
 
 static glReadPixels_t real_glReadPixels;
 static glBindFramebuffer_t real_glBindFramebuffer;
@@ -450,6 +452,7 @@ static void WINAPI gl_debug_message(GLenum source, GLenum type, GLuint id, GLenu
 
 static void bind_current_fb(void);
 static void hot_reload(void);
+static void enabled_apply(void);
 static void program_refresh(GLuint program);
 static void sprite_set_mode(int mode);
 static void hdr_set(int on);
@@ -550,6 +553,10 @@ static void frame_boundary(const char *source)
 	if (f9 && !g_f9_down)
 		g_cap_next = TRUE;
 	g_f9_down = f9;
+
+	if (g_enabled_changed)
+		enabled_apply();
+	g_enabled_changed = FALSE;
 
 	if (g_reload_requested)
 		hot_reload();
@@ -851,7 +858,8 @@ static void shadow_frame_start(const float *view)
 	float motion[3] = { 0.0f, 0.0f, 0.0f };
 	int c;
 
-	if (!g_shadow_enabled || !g_have_light)
+	/* Shadow frames carry every other effect, so without one the game draws as it would alone. */
+	if (!g_shadow_enabled || !g_have_light || !g_cfg_enabled)
 		return;
 	hdr_set(g_cfg_post && g_fbo && post_ready());
 	sprite_set_mode(SPRITE_NORMAL);
@@ -949,7 +957,7 @@ static void rec(int type, int a, int b, int c, int d, int e, size_t ptr, const v
 {
 	rec_cmd *cmd;
 
-	if (!g_shadow_enabled || g_rec_overflow)
+	if (!g_shadow_enabled || !g_cfg_enabled || g_rec_overflow)
 		return;
 	if (g_rec_used + sizeof *cmd + size + 8 > REC_ARENA) {
 		g_rec_overflow = TRUE;
@@ -1743,6 +1751,7 @@ static void present(HDC dc)
 		s.blend_dst = g_blend_dst;
 		memcpy(s.viewport, g_vp, sizeof s.viewport);
 		s.key = g_cfg_ui_key;
+		s.enabled = g_cfg_enabled;
 		s.debug = g_cfg_debug != 0;
 		client_size(dc, &w, &h);
 		ui_draw(g_hwnd, w, h, g_cfg_pack, &s);
@@ -1831,6 +1840,50 @@ void ui_key_changed(int key)
 	WritePrivateProfileStringW(L"mxs-shaders", L"ui_key", text, path);
 }
 
+/* The switch itself waits for the frame boundary, nothing is mid-draw there. */
+void ui_enabled_changed(int enabled)
+{
+	wchar_t path[MAX_PATH];
+
+	g_cfg_enabled = enabled;
+	g_enabled_changed = TRUE;
+	log_path(path, L"mxs-shaders.ini");
+	WritePrivateProfileStringW(L"mxs-shaders", L"enabled", enabled ? L"1" : L"0", path);
+}
+
+/* The game never set these itself, so its own look has them at 1. */
+static void aniso_apply(void)
+{
+	GLuint unit = g_active_unit - GL_TEXTURE0, t;
+
+	g_aniso = g_cfg_enabled ? g_aniso_setting : 1.0f;
+	if (g_aniso_setting <= 1.0f)
+		return;
+	for (t = 1; t < MAX_IDS; t++) {
+		if (!g_tex[t].aniso || !my_glIsTexture(t))
+			continue;
+		real_glBindTexture(GL_TEXTURE_2D, t);
+		real_glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, g_aniso);
+	}
+	real_glBindTexture(GL_TEXTURE_2D, unit < 32 ? g_unit_tex[unit] : g_bound_tex);
+}
+
+/* Without the redirect the game draws to the window, the same path msaa=0 takes. */
+static void enabled_apply(void)
+{
+	RECT r = { 0 };
+
+	log_msg("mod %s at frame %u", g_cfg_enabled ? "on" : "off", g_frame);
+	GetClientRect(g_hwnd, &r);
+	fbo_destroy();
+	if (g_cfg_enabled && g_fbo_samples > 1 && r.right > 0 && r.bottom > 0)
+		fbo_create(r.right, r.bottom);
+	bind_current_fb();
+	alpha_to_coverage_update();
+	aniso_apply();
+	g_reload_requested = TRUE;
+}
+
 void ui_reload_requested(void)
 {
 	g_reload_requested = TRUE;
@@ -1892,17 +1945,19 @@ static void context_ready(HDC dc)
 		my_glGenQueries(TIMER_QUERIES, g_timer);
 
 	my_glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &max_aniso);
-	g_aniso = g_cfg_aniso > 1 ? min((float)g_cfg_aniso, max_aniso) : 1.0f;
-	log_msg("anisotropy %.0f (driver max %.0f)", g_aniso, max_aniso);
+	g_aniso_setting = g_cfg_aniso > 1 ? min((float)g_cfg_aniso, max_aniso) : 1.0f;
+	g_aniso = g_cfg_enabled ? g_aniso_setting : 1.0f;
+	log_msg("anisotropy %.0f (driver max %.0f)", g_aniso_setting, max_aniso);
 	my_glGetError();
 
 	my_glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
 	g_fbo_samples = min(g_cfg_msaa, max_samples);
 	client_size(dc, &w, &h);
-	if (g_fbo_samples > 1 && w > 0 && h > 0)
+	if (g_cfg_enabled && g_fbo_samples > 1 && w > 0 && h > 0)
 		fbo_create(w, h);
 	shadow_create();
-	if (g_cfg_post && g_fbo)
+	/* Not tied to g_fbo: starting with the mod off has none yet, and it can be turned on later. */
+	if (g_cfg_post && g_fbo_samples > 1)
 		post_init(real_wglGetProcAddress);
 		ui_init(real_wglGetProcAddress, g_ui_items, sizeof g_ui_items / sizeof g_ui_items[0]);
 }
@@ -1911,12 +1966,14 @@ static void apply_aniso(GLenum target, GLint filter)
 {
 	if (g_bound_tex < MAX_IDS)
 		g_tex[g_bound_tex].min_filter = filter;
-	if (g_aniso > 1.0f && target == GL_TEXTURE_2D &&
-	    filter >= GL_NEAREST_MIPMAP_NEAREST && filter <= GL_LINEAR_MIPMAP_LINEAR) {
-		real_glTexParameterf(target, GL_TEXTURE_MAX_ANISOTROPY, g_aniso);
-		g_aniso_count++;
+	if (target == GL_TEXTURE_2D && filter >= GL_NEAREST_MIPMAP_NEAREST && filter <= GL_LINEAR_MIPMAP_LINEAR) {
+		/* Marked even when off, turning the mod on later has to find it. */
 		if (g_bound_tex < MAX_IDS)
 			g_tex[g_bound_tex].aniso = TRUE;
+		if (g_aniso > 1.0f) {
+			real_glTexParameterf(target, GL_TEXTURE_MAX_ANISOTROPY, g_aniso);
+			g_aniso_count++;
+		}
 	}
 }
 
@@ -2318,7 +2375,7 @@ HOOK(void, glShaderSource, (GLuint shader, GLsizei count, const GLchar *const *s
 	role = shader_role(shader < MAX_IDS ? g_shader_type[shader] : 0, src);
 	if (shader < MAX_IDS)
 		g_shader_role[shader] = role;
-	if (role && shader < MAX_IDS) {
+	if (role && shader < MAX_IDS && g_cfg_enabled) {
 		repl = pack_shader(role, g_shader_type[shader], src);
 		log_msg("  role %s.%s, %s", role, g_shader_type[shader] == GL_VERTEX_SHADER ? "vsh" : "fsh",
 			repl ? "using pack shader" : "using game shader");
@@ -2454,7 +2511,7 @@ static void program_refresh(GLuint program)
 
 /*
  Rebuilds a shader from the pack, or the game's source if the pack has no such
- file. Returns 0 and logs if it doesn't compile.
+ file or the mod is off. Returns 0 and logs if it doesn't compile.
 */
 static GLuint reload_shader(GLuint old_id, GLenum type)
 {
@@ -2465,7 +2522,7 @@ static GLuint reload_shader(GLuint old_id, GLenum type)
 	GLuint s;
 	GLint ok = 0;
 
-	if (role) {
+	if (role && g_cfg_enabled) {
 		repl = pack_shader(role, type, src);
 		if (repl)
 			src = repl;
@@ -3087,6 +3144,7 @@ static void load_config(void)
 	g_cfg_gl_minor = GetPrivateProfileIntW(L"mxs-shaders", L"gl_minor", 6, path);
 	g_cfg_aniso = GetPrivateProfileIntW(L"mxs-shaders", L"anisotropy", 16, path);
 	g_cfg_msaa = GetPrivateProfileIntW(L"mxs-shaders", L"msaa", 8, path);
+	g_cfg_enabled = ini_int(L"enabled", 1);
 	g_cfg_debug = ini_int(L"debug", 0);
 	g_cfg_gl_debug = GetPrivateProfileIntW(L"mxs-shaders", L"gl_debug", g_cfg_debug, path);
 	g_cfg_shadows = GetPrivateProfileIntW(L"mxs-shaders", L"shadows", 1, path);
@@ -3113,6 +3171,7 @@ void hooks_init(void)
 {
 	load_config();
 	STATIC_MY(glGetIntegerv);
+	STATIC_MY(glIsTexture);
 	STATIC_MY(glGetFloatv);
 	STATIC_MY(glIsEnabled);
 	STATIC_MY(glGetError);

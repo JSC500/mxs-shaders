@@ -595,13 +595,14 @@ static void key_name(int vk, char *name, int size)
 		sprintf_s(name, size, "Key %d", vk);
 }
 
-static void panel(HWND game, int w, int h, const wchar_t *pack, int key, BOOL debug)
+static void panel(HWND game, int w, int h, const wchar_t *pack, const ui_state *s)
 {
 	float row = (float)(h / 26), gap = (float)(int)(row * 0.22f);
 	float panel_w = min(w * 0.92f, h * 1.5f), x = (w - panel_w) * 0.5f, y = h * 0.05f;
 	float label_w = (float)(int)(panel_w * 0.36f), value_w = panel_w - label_w, mx, my, key_x, key_w;
-	BOOL down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, click = down && !g_mouse_was_down, close_hover, reload_hover = FALSE, key_hover;
+	BOOL down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, click = down && !g_mouse_was_down, close_hover, reload_hover = FALSE, key_hover, off_hover;
 	char key_label[48] = "Press a Key";
+	const char *off_label = s->enabled ? "Turn Shaders Off" : "Turn Shaders On";
 	POINT p;
 	int i;
 
@@ -634,7 +635,7 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, int key, BOOL de
 	close_hover = inside(mx, my, x, y, label_w, row);
 	button_box(x, y, label_w, row, close_hover);
 	text(x + row * 0.2f, y, row, "Back to Game", close_hover ? TEXT_DARK : TEXT_LIGHT);
-	if (debug) {
+	if (s->debug) {
 		reload_hover = inside(mx, my, x + label_w + gap, y, label_w, row);
 		button_box(x + label_w + gap, y, label_w, row, reload_hover);
 		text(x + label_w + gap + row * 0.2f, y, row, "Reload Current Shader", reload_hover ? TEXT_DARK : TEXT_LIGHT);
@@ -647,7 +648,7 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, int key, BOOL de
 	if (!g_reading_key) {
 		char name[32];
 
-		key_name(key, name, sizeof name);
+		key_name(s->key, name, sizeof name);
 		sprintf_s(key_label, sizeof key_label, "Panel Key: %s", name);
 	}
 	button_box(key_x, y, key_w, row, key_hover);
@@ -665,6 +666,12 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, int key, BOOL de
 	button_box(x, y, panel_w, row, FALSE);
 	text(x + row * 0.2f, y, row, "*", ASTERISK);
 	text(x + row * 0.2f + text_width("*"), y, row, "Needs a restart", TEXT_LIGHT);
+
+	off_hover = inside(mx, my, x + value_w, y, label_w, row);
+	button_box(x + value_w, y, label_w, row, off_hover);
+	text(x + value_w + row * 0.2f, y, row, off_label, off_hover ? TEXT_DARK : TEXT_LIGHT);
+	if (off_hover && click)
+		ui_enabled_changed(!s->enabled);
 
 
 
@@ -702,7 +709,7 @@ void ui_draw(HWND game, int w, int h, const wchar_t *pack, const ui_state *s)
 		font_build(px);
 
 	g_vertex_count = 0;
-	panel(game, w, h, pack, s->key, s->debug);
+	panel(game, w, h, pack, s);
 
 	gl_BindFramebuffer(GL_FRAMEBUFFER, 0);
 	gl_Viewport(0, 0, w, h);

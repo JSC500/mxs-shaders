@@ -25,12 +25,15 @@ Press **F8** in the game to open the settings panel. Changes apply straight away
 
 To use another key, click **Panel Key** at the top of the panel and press the new key. Pick one the game doesn't use, because the game sees it too. Escape or a click cancels.
 
+**Turn Shaders Off** at the bottom of the panel switches straight to the game's own look, and the same button switches back. The panel stays available, and the choice is kept for the next start. Borderless Window is the one thing that stays, since it's about the window and not the look.
+
 Settings are stored in `%LOCALAPPDATA%\mxs-shaders\mxs-shaders.ini`, which you can also edit by hand. For the strength settings, 0 is off.
 
 Each shader pack remembers its own sliders. In the file, the default pack's are in `[mxs-shaders]` with the other settings, and another pack's are in a section of their own, such as `[pack psx]`.
 
 | Setting | Default | Range | Meaning |
 |---|---|---|---|
+| `enabled` | 1 | 0 or 1 | 0 shows the game's own look. Turn Shaders Off in the panel sets it for you |
 | `time_of_day` | 0 | 0 to 100 | Day to Night in the panel. Fades out sun shadows, shafts and glow for night tracks, and keeps the track dark. 0 is full day, and 100 has no sun at all and runs a little faster. It applies to every track, so change it when you change tracks |
 | `fog` | 10 | 0 to 300 | Haze strength |
 | `parallax` | 200 | 0 to 200 | Depth of ruts and dirt |

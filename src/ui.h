@@ -21,6 +21,7 @@ typedef struct {
 	GLenum active_unit, blend_src, blend_dst;
 	GLint viewport[4];
 	int key;		/* the virtual key that opens the panel */
+	int enabled;		/* 0 while the game draws with its own look */
 	BOOL debug;		/* offers reloading the shaders */
 } ui_state;
 
@@ -35,4 +36,5 @@ void ui_draw(HWND game, int w, int h, const wchar_t *pack, const ui_state *s);
 void ui_setting_changed(const ui_item *item);
 void ui_pack_changed(const wchar_t *name);
 void ui_key_changed(int key);
+void ui_enabled_changed(int enabled);
 void ui_reload_requested(void);
