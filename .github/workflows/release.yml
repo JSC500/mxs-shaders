@@ -1,0 +1,36 @@
+name: Release
+
+# Pushing a tag like v1.0.0 builds the DLL and publishes it as a GitHub release.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      - name: Package the shader packs
+        shell: pwsh
+        run: |
+          Compress-Archive -Path shaderpacks\default -DestinationPath build\default-pack.zip
+          Compress-Archive -Path shaderpacks\psx -DestinationPath build\psx-pack.zip
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" build\opengl32.dll build\default-pack.zip build\psx-pack.zip --generate-notes

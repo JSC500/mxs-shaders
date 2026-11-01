@@ -1,0 +1,33 @@
+#include "psx_vertex.glsl"
+
+/*
+ Simpler models. Vertices snap to a coarse grid in the model's own space, before
+ bones and the camera, so the shape stays attached to it. Triangles smaller than a
+ cell collapse to nothing and larger ones get blockier.
+*/
+const float MODEL_GRID = 0.2;	/* game units, a bike is about 5 long */
+
+vec3 posed(vec3 p)
+{
+	vec3 sum = vec3(0.0);
+	int i;
+
+	for (i = 0; i < 4; i++) {
+		int b = int(vattr_bones[i]);
+
+		sum += (u_bone_r[b] * (p - u_bone_c[b]) + u_bone_t[b]) * vattr_weights[i];
+	}
+	return sum;
+}
+
+void main()
+{
+	vec3 p = floor(vattr_position / MODEL_GRID + 0.5) * MODEL_GRID;
+	vec4 view;
+
+	game_main();
+	view = u_modelview * vec4(u_nbones == 0 ? p : posed(p), 1.0);
+	interp_viewer = view.xyz / view.w;
+	gl_Position = u_projection * view;
+	psx_finish();
+}

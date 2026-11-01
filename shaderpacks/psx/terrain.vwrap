@@ -1,0 +1,7 @@
+#include "psx_vertex.glsl"
+
+void main()
+{
+	game_main();
+	psx_finish();
+}
