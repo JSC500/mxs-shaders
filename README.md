@@ -51,7 +51,7 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 | `hide_cursor` | 1 | 0 or 1 | Hides the mouse cursor while riding. It comes back in menus |
 | `ui_key` | 119 | Windows virtual key code | The key that opens the panel, 119 is F8. Panel Key in the panel sets it for you |
 
-Only `shadow_range`'s lower limit of 20 is enforced, and `msaa` and `anisotropy` are capped at what your GPU supports. Higher values for the others still work but may look wrong. Above about 280, shadows far away may go missing, and higher values make shadows softer.
+Only `shadow_range`'s lower limit of 20 is enforced, and `msaa` and `anisotropy` are capped at what your GPU supports. Higher values for the others still work but may look wrong. Above 500, shadows far away may go missing, and higher values make shadows softer.
 
 After editing the file by hand, restart the game to apply your changes.
 

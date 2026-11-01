@@ -111,8 +111,8 @@ vec3 shadow_coord(mat4 matrix, vec3 pos)
 
 float sun_shadow(vec3 pos, vec3 n, float ignore_meters)
 {
-	const float depth_per_meter = 1.0 / 800.0;	/* SHADOW_DEPTH_RANGE * 2 in the mod */
-	float bias = 0.00004 + ignore_meters * depth_per_meter;
+	const float depth_per_meter = 1.0 / 1600.0;	/* SHADOW_DEPTH_RANGE * 2 in the mod */
+	float bias = 0.00002 + ignore_meters * depth_per_meter;
 	vec3 near_c, far_c;
 	float edge, far_edge, far_radius, tilt, near_shadow = 1.0, far_shadow = 1.0;
 	vec3 map_x, map_z;
@@ -160,7 +160,7 @@ float sun_shadow_fast(vec3 pos)
 	c = shadow_coord(u_shadow_matrix, pos);
 	if (c.x <= 0.0 || c.x >= 1.0 || c.y <= 0.0 || c.y >= 1.0)
 		return 1.0;
-	return mix(texture(u_shadow_map, vec3(c.xy, c.z - 0.0002)), 1.0, u_night);
+	return mix(texture(u_shadow_map, vec3(c.xy, c.z - 0.0001)), 1.0, u_night);
 }
 
 /*

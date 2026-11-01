@@ -58,6 +58,7 @@
 #define GL_RGBA 0x1908
 #define GL_DEPTH_TEST 0x0B71
 #define GL_CULL_FACE 0x0B44
+#define GL_DEPTH_CLAMP 0x864F
 #define GL_DEPTH_BUFFER_BIT 0x0100
 #define GL_DEPTH_COMPONENT 0x1902
 #define GL_DEPTH_COMPONENT32F 0x8CAC
@@ -130,7 +131,7 @@ static const char *g_shader_role[MAX_IDS];
 /* --- shadow state --- */
 
 
-#define SHADOW_DEPTH_RANGE 400.0f
+#define SHADOW_DEPTH_RANGE 800.0f
 
 enum { ROLE_NONE, ROLE_TERRAIN, ROLE_MODEL };
 
@@ -456,6 +457,7 @@ static void enabled_apply(void);
 static void program_refresh(GLuint program);
 static void sprite_set_mode(int mode);
 static void hdr_set(int on);
+static void terrain_frame_end(void);
 
 /* Saves the frame from GL, since desktop capture can't be trusted to see the game. */
 static void save_frame(int w, int h)
@@ -536,6 +538,7 @@ static void frame_boundary(const char *source)
 		g_rec = spare;
 	}
 	g_rec_used = 0;
+	terrain_frame_end();
 	if (g_replay_block)
 		g_replay_block--;
 
@@ -1084,18 +1087,23 @@ static float g_pose_mv[16], g_pose_r[POSE_MAX_BONES][9], g_pose_t[POSE_MAX_BONES
 static int g_pose_bones;
 static float g_replay_pose[POSE_MAX_BONES][16];
 static int g_replay_bones;
-static uni_entry *model_uniform(const char *name)
+static uni_entry *prog_uniform(GLuint prog, const char *name)
 {
 	size_t n = strlen(name);
 	int i;
 
-	for (i = 0; g_model_prog && i < g_uni_count[g_model_prog]; i++) {
-		uni_entry *u = &g_uni[g_model_prog][i];
+	for (i = 0; prog && i < g_uni_count[prog]; i++) {
+		uni_entry *u = &g_uni[prog][i];
 
 		if (!strncmp(u->name, name, n) && (!u->name[n] || u->name[n] == '['))
 			return u;
 	}
 	return NULL;
+}
+
+static uni_entry *model_uniform(const char *name)
+{
+	return prog_uniform(g_model_prog, name);
 }
 
 /* Bones turn around a center: p' = r * (p - c) + t. */
@@ -1552,6 +1560,123 @@ static int shadow_draw_kind(void)
 		return DRAW_DYNAMIC;
 	}
 	return DRAW_STATIC;
+}
+
+/*
+ The game skips terrain away from the view, but a hill out of view still shades
+ what's on screen, and its shadow would go with it one block at a time. All terrain
+ comes from one height texture, so the blocks the game skipped are added to the
+ shadow maps here, using its widest mesh and its grid of blocks.
+*/
+#define TERRAIN_CELLS 256
+#define MAX_TERRAIN_FILL 4096
+#define TERRAIN_HEIGHT_MARGIN 200.0f	/* a block's height isn't known here */
+
+typedef struct {
+	float x, z, scale;
+} terrain_block;
+
+static GLuint g_terrain_vao, g_terrain_heights;
+static GLsizei g_terrain_count;
+static GLenum g_terrain_type;
+static const void *g_terrain_indices;
+static float g_terrain_spacing, g_terrain_cell, g_terrain_min_scale, g_terrain_max_scale;
+static int g_terrain_rows;
+static unsigned char g_terrain_seen[TERRAIN_CELLS][TERRAIN_CELLS];
+static terrain_block g_terrain_fill[MAX_TERRAIN_FILL];
+static int g_terrain_fill_count;
+
+static void terrain_draw_seen(GLsizei count, GLenum type, const void *indices)
+{
+	uni_entry *offset = prog_uniform(g_terrain_prog, "u_meshoffset"), *scale_u = prog_uniform(g_terrain_prog, "u_meshscale");
+	uni_entry *spacing_u = prog_uniform(g_terrain_prog, "u_spacing"), *heights = prog_uniform(g_terrain_prog, "u_heights");
+	const float *o;
+	float scale, spacing;
+	GLuint tex;
+	int x, z, x0, z0, n;
+
+	if (!offset || !offset->data || !scale_u || !scale_u->data || !spacing_u || !spacing_u->data ||
+	    !heights || heights->value < 0 || heights->value >= 32)
+		return;
+	tex = g_unit_tex[heights->value];
+	if (!tex || tex >= MAX_IDS || g_tex[tex].w <= 0)
+		return;
+	o = (const float *)offset->data;
+	scale = *(const float *)scale_u->data;
+	spacing = *(const float *)spacing_u->data;
+
+	/* A new track. */
+	if (tex != g_terrain_heights || spacing != g_terrain_spacing) {
+		g_terrain_heights = tex;
+		g_terrain_spacing = spacing;
+		g_terrain_cell = g_tex[tex].w * spacing / TERRAIN_CELLS;
+		g_terrain_rows = min(TERRAIN_CELLS, (int)(g_tex[tex].h * spacing / g_terrain_cell + 0.5f));
+		g_terrain_min_scale = g_terrain_max_scale = scale;
+		g_terrain_count = 0;
+		memset(g_terrain_seen, 0, sizeof g_terrain_seen);
+	}
+	g_terrain_min_scale = min(g_terrain_min_scale, scale);
+	g_terrain_max_scale = max(g_terrain_max_scale, scale);
+
+	/* Blocks next to a coarser one have their edge cut, the full mesh has the most indices. */
+	if (count > g_terrain_count) {
+		g_terrain_vao = g_cur_vao;
+		g_terrain_count = count;
+		g_terrain_type = type;
+		g_terrain_indices = indices;
+	}
+
+	x0 = (int)floor(o[0] / g_terrain_cell + 0.5f);
+	z0 = (int)floor(o[1] / g_terrain_cell + 0.5f);
+	n = (int)(scale / g_terrain_cell + 0.5f);
+	for (z = max(z0, 0); z < z0 + n && z < TERRAIN_CELLS; z++)
+		for (x = max(x0, 0); x < x0 + n && x < TERRAIN_CELLS; x++)
+			g_terrain_seen[z][x] = 1;
+}
+
+static void terrain_fill_visit(int x, int z, int n)
+{
+	int cx, cz, cells = 0, seen = 0;
+
+	for (cz = z; cz < z + n && cz < g_terrain_rows; cz++)
+		for (cx = x; cx < x + n && cx < TERRAIN_CELLS; cx++) {
+			cells++;
+			seen += g_terrain_seen[cz][cx];
+		}
+	if (seen == cells)
+		return;
+	if (!seen) {
+		if (g_terrain_fill_count < MAX_TERRAIN_FILL) {
+			terrain_block *b = &g_terrain_fill[g_terrain_fill_count++];
+
+			b->x = x * g_terrain_cell;
+			b->z = z * g_terrain_cell;
+			b->scale = n * g_terrain_cell;
+		}
+		return;
+	}
+	if (n > 1 && n / 2 * g_terrain_cell > g_terrain_min_scale * 0.75f) {
+		n /= 2;
+		terrain_fill_visit(x, z, n);
+		terrain_fill_visit(x + n, z, n);
+		terrain_fill_visit(x, z + n, n);
+		terrain_fill_visit(x + n, z + n, n);
+	}
+}
+
+/* Goes with the recording: what this frame skipped is drawn with the next frame's shadows. */
+static void terrain_frame_end(void)
+{
+	int x, z, n;
+
+	g_terrain_fill_count = 0;
+	if (!g_terrain_count)
+		return;
+	n = (int)(g_terrain_max_scale / g_terrain_cell + 0.5f);
+	for (z = 0; z < g_terrain_rows; z += n)
+		for (x = 0; x < TERRAIN_CELLS; x += n)
+			terrain_fill_visit(x, z, n);
+	memset(g_terrain_seen, 0, sizeof g_terrain_seen);
 }
 
 static void fbo_destroy(void)
@@ -2036,6 +2161,8 @@ HOOK(void, glDrawElements, (GLenum mode, GLsizei count, GLenum type, const void 
 			rigid_draw_seen(count, type, indices);
 			if (g_rider_run == RIDER_DRAWING)
 				g_rider_run = RIDER_DONE;
+		} else if (kind == DRAW_STATIC && g_cur_prog == g_terrain_prog) {
+			terrain_draw_seen(count, type, indices);
 		}
 		rec(REC_DRAWELEMENTS, mode, count, type, slot, kind, (size_t)indices, NULL, 0);
 	}
@@ -2728,6 +2855,10 @@ HOOK(void, glDeleteVertexArrays, (GLsizei n, const GLuint *arrays))
 	for (i = 0; i < n; i++) {
 		int j;
 
+		if (arrays[i] == g_terrain_vao) {
+			g_terrain_count = 0;
+			g_terrain_heights = 0;
+		}
 		if (arrays[i] < MAX_IDS)
 			g_mesh_bytes[arrays[i]] = 0;
 		for (j = 0; j < g_rigid_parts; j++)
@@ -2940,6 +3071,45 @@ static void draw_rigid(int cascade)
 	real_glBindTexture(GL_TEXTURE_2D, unit >= 0 && unit < 32 ? g_unit_tex[unit] : 0);
 }
 
+static void draw_terrain_fill(int cascade)
+{
+	uni_entry *offset = prog_uniform(g_terrain_prog, "u_meshoffset"), *scale = prog_uniform(g_terrain_prog, "u_meshscale");
+	uni_entry *heights = prog_uniform(g_terrain_prog, "u_heights");
+	const float *m = g_light_matrix[cascade];
+	float range = cascade ? SHADOW_NEAR_RANGE : (float)g_cfg_shadow_range;
+	int i;
+
+	if (!g_terrain_fill_count || !offset || !scale || !heights || offset->real < 0 || scale->real < 0)
+		return;
+
+	real_glUseProgram(g_terrain_prog);
+	real_glBindVertexArray(g_terrain_vao);
+	real_glActiveTexture(GL_TEXTURE0 + heights->value);
+	real_glBindTexture(GL_TEXTURE_2D, g_terrain_heights);
+
+	for (i = 0; i < g_terrain_fill_count; i++) {
+		const terrain_block *b = &g_terrain_fill[i];
+		float cx = b->x + b->scale * 0.5f, cz = b->z + b->scale * 0.5f;
+		float reach = 1.0f + (b->scale * 0.71f + TERRAIN_HEIGHT_MARGIN) / range;
+		float block_offset[2];
+
+		if (fabs(m[0] * cx + m[4] * g_camera_y + m[8] * cz + m[12]) > reach ||
+		    fabs(m[1] * cx + m[5] * g_camera_y + m[9] * cz + m[13]) > reach)
+			continue;
+		block_offset[0] = b->x;
+		block_offset[1] = b->z;
+		real_glUniform2fv(offset->real, 1, block_offset);
+		real_glUniform1f(scale->real, b->scale);
+		real_glDrawElements(GL_TRIANGLES, g_terrain_count, g_terrain_type, g_terrain_indices);
+	}
+
+	if (offset->data)
+		real_glUniform2fv(offset->real, 1, offset->data);
+	if (scale->data)
+		real_glUniform1f(scale->real, *(const float *)scale->data);
+	real_glBindTexture(GL_TEXTURE_2D, g_unit_tex[heights->value]);
+}
+
 static void replay_cascade(int cascade)
 {
 	int size = cascade ? SHADOW_NEAR_SIZE : g_cfg_shadow_size;
@@ -2954,6 +3124,7 @@ static void replay_cascade(int cascade)
 	real_glUseProgram(g_rec_prev_prog);
 	real_glBindVertexArray(g_rec_prev_vao);
 	replay_stream(g_rec_prev, g_rec_prev_used, g_rec_prev_prog, g_rec_prev_vao, cascade);
+	draw_terrain_fill(cascade);
 	if (g_rigid_needed)
 		draw_rigid(cascade);
 }
@@ -2965,10 +3136,13 @@ static void replay_cascade(int cascade)
 static void shadow_replay(void)
 {
 	GLboolean depth = my_glIsEnabled(GL_DEPTH_TEST), cull = my_glIsEnabled(GL_CULL_FACE);
+	GLboolean clamp = my_glIsEnabled(GL_DEPTH_CLAMP);
 	int c;
 
 	real_glEnable(GL_DEPTH_TEST);
 	real_glDisable(GL_CULL_FACE);
+	/* Casters beyond the map's sunward end still shadow everything, so they're flattened onto it. */
+	real_glEnable(GL_DEPTH_CLAMP);
 	real_glDepthMask(1);
 	for (c = 0; c < SHADOW_CASCADES; c++)
 		replay_cascade(c);
@@ -2982,6 +3156,8 @@ static void shadow_replay(void)
 		real_glDisable(GL_DEPTH_TEST);
 	if (cull)
 		real_glEnable(GL_CULL_FACE);
+	if (!clamp)
+		real_glDisable(GL_DEPTH_CLAMP);
 	real_glDepthMask(g_depth_mask);
 	real_glViewport(g_vp[0], g_vp[1], g_vp[2], g_vp[3]);
 	bind_current_fb();

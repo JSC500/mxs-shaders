@@ -80,7 +80,7 @@ World shaders should return early when `u_shadow_pass` is set, as the default pa
 - **The sprite shader also draws ground tiles.** The game uses it to paint terrain into its own framebuffer, not just the sky and HUD. Tie sky and particle effects to `u_sprite_mode`, which is 0 for those tiles, or they get baked into the ground as big rectangles.
 - **Skinned models don't use `u_modelview` for their position.** On riders the bones hold the world position, and the modelview alone sits far from the bike. In `skinned.vsh`, do anything position-based on the final result, after the bones are applied.
 - **Game units aren't metres.** The camera moves about 65 units per second at a displayed speed of about 39, and the wheelbase is about 4.4 units.
-- **Shadow depth has a fixed scale.** `sun_shadow` in `common.glsl` assumes the map covers 800 units of depth, which the mod sets. Bias values in your own lookups need to follow that scale.
+- **Shadow depth has a fixed scale.** `sun_shadow` in `common.glsl` assumes the map covers 1600 units of depth, which the mod sets. Bias values in your own lookups need to follow that scale.
 
 ## Sharing a pack
 

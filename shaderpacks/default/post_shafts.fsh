@@ -46,7 +46,7 @@ void main()
 		if (c.x <= 0.0 || c.x >= 1.0 || c.y <= 0.0 || c.y >= 1.0)
 			sum += 1.0;
 		else
-			sum += texture(u_shadow_map, vec3(c.xy, c.z - 0.0003));
+			sum += texture(u_shadow_map, vec3(c.xy, c.z - 0.00015));
 	}
 	f_color = vec4(sum / float(STEPS), (end - START) / (RANGE - START), 0.0, 1.0);
 }
