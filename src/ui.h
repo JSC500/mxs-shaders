@@ -13,6 +13,7 @@ typedef struct {
 	const int *choices;
 	int choice_count;
 	BOOL restart;		/* only takes effect on the next start */
+	const char *const *names;	/* choices shown by name, else as numbers */
 } ui_item;
 
 /* The GL state to leave behind, none of it goes through the hooks. */

@@ -5,7 +5,7 @@ This project aims to bring improved visuals such as shadows from real time dynam
 ## Hard goals
 1. Do not modify the .exe or the memory of the running process. You can read memory from the running process but don't modify it.
 2. The mod should work with multiple versions of MX simulator, not just the latest snapshot.
-3. The path where the game lives is C:\Program Files (x86)\MX Simulator
+3. The path where the game lives is normally C:\Program Files (x86)\MX Simulator, but can live other places. Ask the user if this folder does not exist.
 
 ## Layout
 - `src/`: the `opengl32.dll` proxy. `hooks.c` is the GL hooks, shadows and recording, `post.c` the post passes, `ui.c` the F8 panel, `pack.c` shader packs.

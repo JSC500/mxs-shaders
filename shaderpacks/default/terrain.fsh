@@ -103,12 +103,16 @@ vec2 parallax_coord()
 	return uv - step_uv * under / max(under - last_under, 1e-4) * step(0.0, under);
 }
 
+const float WET_DARKEN = 0.6;		/* damp soil, all over */
+const float PUDDLE_DARKEN = 0.45;	/* the bed under the water */
+const float PUDDLE_SHINE = 600.0;
+
 void main()
 {
 	vec4 nmap, s;
-	vec3 n, up, light, albedo, lit, ambient;
+	vec3 n, up, light, albedo, lit, ambient, world;
 	vec2 uv;
-	float ndl, len, power;
+	float ndl, len, power, water, snow;
 
 	if (u_shadow_pass != 0) {
 		f_fragcolor = vec4(0.0);
@@ -127,7 +131,16 @@ void main()
 	up = normalize(interp_modelview[1]);
 
 	albedo = to_linear(textureGrad(u_tex, uv, dFdx(interp_texcoord), dFdy(interp_texcoord)).rgb);
-	ndl = max(dot(n, light), 0.0) * sun_shadow(interp_viewer, n, 0.0);
+
+	/* Snow and standing water both lie flat over the detail underneath. */
+	world = to_world(interp_viewer);
+	snow = snow_cover(world, dot(n, up));
+	water = u_wet > 0.0 ? puddle(world, ground_normal().y) * (1.0 - snow) : 0.0;	/* dry ground skips the height reads */
+	albedo *= mix(1.0, WET_DARKEN, u_wet * (1.0 - snow)) * mix(1.0, PUDDLE_DARKEN, water);
+	albedo = mix(albedo, SNOW_ALBEDO, snow);
+	n = normalize(mix(n, up, max(water, snow * 0.7)));
+
+	ndl = max(dot(n, light), 0.0) * sun_shadow(interp_viewer, n, 0.0) * cloud_shadow(interp_viewer, light);
 
 	/* Sky light falls off on surfaces facing away from the sky. */
 	ambient = sky_light(u_ambient.rgb) * (0.65 + 0.35 * dot(n, up));
@@ -137,8 +150,16 @@ void main()
 	s = textureGrad(u_smap, uv, dFdx(interp_texcoord), dFdy(interp_texcoord));
 	power = s.g * 128.0 + 0.125;
 	if (ndl > 0.0)
-		lit += to_linear(u_specular_color) * s.r * len * ndl *
+		lit += to_linear(u_specular_color) * s.r * len * ndl * (1.0 - snow) *
 		       specular(n, interp_viewer, light, power) * fresnel(n, interp_viewer, 0.04) * 4.0;
+
+	/* Water mirrors the sky, most at a glancing look, and the sun as a sharp glint. */
+	if (water > 0.0) {
+		float f = fresnel(up, interp_viewer, 0.02) * water;
+
+		lit = mix(lit, sky_reflection(u_fog_color), f);
+		lit += to_linear(u_diffuse) * ndl * specular(up, interp_viewer, light, PUDDLE_SHINE) * f;
+	}
 
 	f_fragcolor = vec4(finish_color(lit, u_fog_color, u_fog_density), u_ambient.a);
 }

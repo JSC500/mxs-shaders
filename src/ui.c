@@ -556,6 +556,8 @@ static void item_row(int index, float x, float y, float label_w, float value_w, 
 
 	if (it->kind == UI_TOGGLE)
 		strcpy_s(value, sizeof value, *it->value ? "Yes" : "No");
+	else if (it->names)
+		strcpy_s(value, sizeof value, it->names[choice_index(it)]);
 	else
 		sprintf_s(value, sizeof value, "%d", *it->value);
 	button_box(x + label_w, y, value_w, row, active);
@@ -597,7 +599,8 @@ static void key_name(int vk, char *name, int size)
 
 static void panel(HWND game, int w, int h, const wchar_t *pack, const ui_state *s)
 {
-	float row = (float)(h / 26), gap = (float)(int)(row * 0.22f);
+	/* Rows shrink to fit every item, with the header and footer taking about eight. */
+	float row = (float)(int)(h / (g_item_count * 1.22f + 7.6f)), gap = (float)(int)(row * 0.22f);
 	float panel_w = min(w * 0.92f, h * 1.5f), x = (w - panel_w) * 0.5f, y = h * 0.05f;
 	float label_w = (float)(int)(panel_w * 0.36f), value_w = panel_w - label_w, mx, my, key_x, key_w;
 	BOOL down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, click = down && !g_mouse_was_down, close_hover, reload_hover = FALSE, key_hover, off_hover;
