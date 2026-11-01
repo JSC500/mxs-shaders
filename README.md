@@ -9,6 +9,12 @@ The mod is one DLL. It doesn't change `mx.exe` or the game's memory, and it only
 
 > This is an unofficial fan project, not made by or connected to the developer of MX Simulator. Wait for confirmation by JLV and rf to use it in any multiplayer race.
 
+## Screenshots
+
+| Game's own look | With the mod |
+|---|---|
+| ![The game's own look](example%20screenshots/normal.webp) | ![The same scene with the mod](example%20screenshots/shader.webp) |
+
 ## Install
 
 1. Download `opengl32.dll` from the [Releases](../../releases) page.
@@ -58,6 +64,8 @@ After editing the file by hand, restart the game to apply your changes.
 ### PSX look
 
 For a PS1 style, download `psx-pack.zip` from the Releases page and extract the `psx` folder into `%LOCALAPPDATA%\mxs-shaders\shaderpacks`. Then pick `psx` on the Shader Pack row of the F8 panel, and pick `default` to go back.
+
+![The PSX look](example%20screenshots/psx.webp)
 
 ### Borderless fullscreen to avoid black screen when alt-tabbing
 
