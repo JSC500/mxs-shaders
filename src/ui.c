@@ -102,7 +102,7 @@ static int g_vertex_count;
 
 static HWND g_input_window;
 static HCURSOR g_game_cursor;
-static BOOL g_mouse_was_down;
+static BOOL g_mouse_was_down, g_reading_key, g_key_was_down[256];
 static int g_dragging = -1;
 
 
@@ -227,6 +227,11 @@ void ui_context_lost(void)
 BOOL ui_is_open(void)
 {
 	return g_open;
+}
+
+BOOL ui_is_reading_key(void)
+{
+	return g_reading_key;
 }
 
 /* --- the font --- */
@@ -459,6 +464,7 @@ void ui_toggle(HWND game)
 		return;
 	g_open = !g_open;
 	g_dragging = -1;
+	g_reading_key = FALSE;
 	g_mouse_was_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
 	if (g_open) {
 		packs_scan();
@@ -564,12 +570,38 @@ static void item_row(int index, float x, float y, float label_w, float value_w, 
 	}
 }
 
-static void panel(HWND game, int w, int h, const wchar_t *pack, BOOL debug)
+/* The first key to go down since the last call, not counting the mouse buttons. */
+static int key_pressed(void)
+{
+	int vk, pressed = 0;
+
+	for (vk = VK_BACK; vk < 256; vk++) {
+		BOOL down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+
+		if (down && !g_key_was_down[vk] && !pressed)
+			pressed = vk;
+		g_key_was_down[vk] = down;
+	}
+	return pressed;
+}
+
+/* Names come from the keyboard layout. The font skips what it doesn't have, such as umlauts. */
+static void key_name(int vk, char *name, int size)
+{
+	UINT code = MapVirtualKeyA(vk, MAPVK_VK_TO_VSC_EX);
+	LONG lp = (code & 0xff) << 16 | ((code & 0xff00) ? 1 << 24 : 0);
+
+	if (!GetKeyNameTextA(lp, name, size))
+		sprintf_s(name, size, "Key %d", vk);
+}
+
+static void panel(HWND game, int w, int h, const wchar_t *pack, int key, BOOL debug)
 {
 	float row = (float)(h / 26), gap = (float)(int)(row * 0.22f);
 	float panel_w = min(w * 0.92f, h * 1.5f), x = (w - panel_w) * 0.5f, y = h * 0.05f;
-	float label_w = (float)(int)(panel_w * 0.36f), value_w = panel_w - label_w, mx, my;
-	BOOL down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, click = down && !g_mouse_was_down, close_hover, reload_hover = FALSE;
+	float label_w = (float)(int)(panel_w * 0.36f), value_w = panel_w - label_w, mx, my, key_x, key_w;
+	BOOL down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, click = down && !g_mouse_was_down, close_hover, reload_hover = FALSE, key_hover;
+	char key_label[48] = "Press a Key";
 	POINT p;
 	int i;
 
@@ -578,6 +610,20 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, BOOL debug)
 	mx = (float)p.x;
 	my = (float)p.y;
 	g_mouse_was_down = down;
+
+	/* Escape or a click cancels. The click stays here, so it doesn't change a setting too. */
+	if (g_reading_key) {
+		int pressed = key_pressed();
+
+		if (click) {
+			g_reading_key = FALSE;
+			click = FALSE;
+		} else if (pressed) {
+			g_reading_key = FALSE;
+			if (pressed != VK_ESCAPE)
+				ui_key_changed(pressed);
+		}
+	}
 
 	fill(0.0f, 0.0f, (float)w, (float)h, DIM);
 
@@ -593,6 +639,19 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, BOOL debug)
 		button_box(x + label_w + gap, y, label_w, row, reload_hover);
 		text(x + label_w + gap + row * 0.2f, y, row, "Reload Current Shader", reload_hover ? TEXT_DARK : TEXT_LIGHT);
 	}
+
+	/* The rows already fill the screen, so this one shares the top line. */
+	key_x = x + (label_w + gap) * 2.0f;
+	key_w = x + panel_w - key_x;
+	key_hover = inside(mx, my, key_x, y, key_w, row);
+	if (!g_reading_key) {
+		char name[32];
+
+		key_name(key, name, sizeof name);
+		sprintf_s(key_label, sizeof key_label, "Panel Key: %s", name);
+	}
+	button_box(key_x, y, key_w, row, key_hover);
+	text(key_x + row * 0.2f, y, row, key_label, key_hover ? TEXT_DARK : TEXT_LIGHT);
 	y += row + gap * 3.0f;
 
 	pack_row(x, y, label_w, value_w, row, mx, my, click, pack);
@@ -611,6 +670,10 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, BOOL debug)
 
 	if (reload_hover && click)
 		ui_reload_requested();
+	if (key_hover && click) {
+		key_pressed();	/* keys already held don't count */
+		g_reading_key = TRUE;
+	}
 	if (close_hover && click)
 		ui_toggle(game);
 }
@@ -639,7 +702,7 @@ void ui_draw(HWND game, int w, int h, const wchar_t *pack, const ui_state *s)
 		font_build(px);
 
 	g_vertex_count = 0;
-	panel(game, w, h, pack, s->debug);
+	panel(game, w, h, pack, s->key, s->debug);
 
 	gl_BindFramebuffer(GL_FRAMEBUFFER, 0);
 	gl_Viewport(0, 0, w, h);

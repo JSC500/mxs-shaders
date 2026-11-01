@@ -90,7 +90,7 @@ static void cursor_update(void);
 
 static FILE *g_cap;
 static BOOL g_cap_next, g_cap_shot;
-static BOOL g_f8_down, g_f9_down;
+static BOOL g_ui_key_down, g_f9_down;
 static HWND g_hwnd;
 static BOOL g_saw_swap;
 
@@ -232,7 +232,7 @@ static int g_hud_boxes, g_hud_boxes_last;
 static BOOL g_cursor_hidden;
 static BOOL g_reload_requested;	/* from the panel, done at the frame boundary */
 static int g_cfg_fog, g_cfg_parallax, g_cfg_motion_blur, g_cfg_dof, g_cfg_saturation, g_cfg_contrast, g_cfg_split_tone;
-static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_time_of_day;
+static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_time_of_day, g_cfg_ui_key;
 
 typedef void (WINAPI *glGenObjects_t)(GLsizei, GLuint *);
 typedef void (WINAPI *glDeleteObjects_t)(GLsizei, const GLuint *);
@@ -491,7 +491,7 @@ static void save_frame(int w, int h)
 
 static void frame_boundary(const char *source)
 {
-	BOOL f8, f9, focused;
+	BOOL ui_key, f9, focused;
 
 	if (g_cap) {
 		cap("--- end of frame %u: %u draws, %u clears, %u fb binds, %u program binds (via %s)",
@@ -555,10 +555,10 @@ static void frame_boundary(const char *source)
 		hot_reload();
 	g_reload_requested = FALSE;
 
-	f8 = focused && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
-	if ((f8 && !g_f8_down) || (ui_is_open() && !focused))
+	ui_key = focused && (GetAsyncKeyState(g_cfg_ui_key) & 0x8000) != 0;
+	if ((ui_key && !g_ui_key_down && !ui_is_reading_key()) || (ui_is_open() && !focused))
 		ui_toggle(g_hwnd);
-	g_f8_down = f8;
+	g_ui_key_down = ui_key;
 
 	if (g_cap_next || (g_cfg_debug && (g_frame == 300 || g_frame % 1800 == 0))) {
 		char name[64];
@@ -1742,6 +1742,7 @@ static void present(HDC dc)
 		s.blend_src = g_blend_src;
 		s.blend_dst = g_blend_dst;
 		memcpy(s.viewport, g_vp, sizeof s.viewport);
+		s.key = g_cfg_ui_key;
 		s.debug = g_cfg_debug != 0;
 		client_size(dc, &w, &h);
 		ui_draw(g_hwnd, w, h, g_cfg_pack, &s);
@@ -1817,6 +1818,17 @@ void ui_pack_changed(const wchar_t *name)
 	WritePrivateProfileStringW(L"mxs-shaders", L"pack", name, path);
 	pack_init(name);
 	g_reload_requested = TRUE;
+}
+
+void ui_key_changed(int key)
+{
+	wchar_t path[MAX_PATH], text[16];
+
+	g_cfg_ui_key = key;
+	g_ui_key_down = TRUE;	/* it's still held, and mustn't close the panel */
+	log_path(path, L"mxs-shaders.ini");
+	swprintf_s(text, 16, L"%d", key);
+	WritePrivateProfileStringW(L"mxs-shaders", L"ui_key", text, path);
 }
 
 void ui_reload_requested(void)
@@ -2589,6 +2601,7 @@ static void load_live_settings(void)
 	g_cfg_split_tone = pack_int(L"split_tone", 20);
 	g_cfg_hide_hud = ini_int(L"hide_hud", 0);
 	g_cfg_hide_cursor = ini_int(L"hide_cursor", 1);
+	g_cfg_ui_key = ini_int(L"ui_key", VK_F8);
 	g_cfg_shadow_range = max(pack_int(L"shadow_range", 500), (int)SHADOW_NEAR_RANGE);
 }
 

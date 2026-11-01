@@ -23,6 +23,8 @@ To uninstall, delete `opengl32.dll` from the game folder. To remove the settings
 
 Press **F8** in the game to open the settings panel. Changes apply straight away and are saved automatically, except those marked with a red `*`, which need a restart. It works best in a menu or while paused.
 
+To use another key, click **Panel Key** at the top of the panel and press the new key. Pick one the game doesn't use, because the game sees it too. Escape or a click cancels.
+
 Settings are stored in `%LOCALAPPDATA%\mxs-shaders\mxs-shaders.ini`, which you can also edit by hand. For the strength settings, 0 is off.
 
 Each shader pack remembers its own sliders. In the file, the default pack's are in `[mxs-shaders]` with the other settings, and another pack's are in a section of their own, such as `[pack psx]`.
@@ -44,6 +46,7 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 | `borderless` | 1 | 0 or 1 | See below |
 | `hide_hud` | 0 | 0 or 1 | Hides the game's HUD in races, such as the tachometer, pitboard, messages and chat. Menus with rows stay visible |
 | `hide_cursor` | 1 | 0 or 1 | Hides the mouse cursor while riding. It comes back in menus |
+| `ui_key` | 119 | Windows virtual key code | The key that opens the panel, 119 is F8. Panel Key in the panel sets it for you |
 
 Only `shadow_range`'s lower limit of 20 is enforced, and `msaa` and `anisotropy` are capped at what your GPU supports. Higher values for the others still work but may look wrong. Above about 280, shadows far away may go missing, and higher values make shadows softer.
 
