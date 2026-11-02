@@ -160,8 +160,10 @@ void ui_init(PROC (WINAPI *get_proc)(LPCSTR), const ui_item *items, int count)
 
 	g_items = items;
 	g_item_count = count;
-	for (i = 0; i < count; i++)
-		g_tab_rows = max(g_tab_rows, ++rows[items[i].tab]);
+	for (i = 0; i < count; i++) {
+		rows[items[i].tab]++;
+		g_tab_rows = max(g_tab_rows, rows[items[i].tab]);
+	}
 
 	LOAD_GL11(gl_Enable, "glEnable");
 	LOAD_GL11(gl_Disable, "glDisable");
@@ -623,8 +625,8 @@ static void key_name(int vk, char *name, int size)
 
 static void panel(HWND game, int w, int h, const wchar_t *pack, const ui_state *s)
 {
-	/* Rows fit the longest page plus about nine for the header, tabs and footer, never bigger than before. */
-	float row = (float)(int)(h / max(g_tab_rows * 1.22f + 9.0f, 26.0f)), gap = (float)(int)(row * 0.22f);
+	/* The game's menu spacing, with rows shrinking only if the longest page and the header, tabs and footer need more than 90% of the screen. */
+	float row = (float)(int)(h / max(g_tab_rows * 1.21f + 8.2f, 25.0f)), gap = (float)(int)(row * 0.09f);
 	float panel_w = min(w * 0.92f, h * 1.5f), x = (w - panel_w) * 0.5f, y = h * 0.05f, items_y;
 	float label_w = (float)(int)(panel_w * 0.36f), value_w = panel_w - label_w, mx, my, key_x, key_w;
 	BOOL down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, click = down && !g_mouse_was_down, close_hover, reload_hover = FALSE, key_hover, off_hover;
@@ -657,7 +659,7 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, const ui_state *
 
 	label_box(x, y, label_w, row * 1.1f);
 	text(x + row * 0.2f, y, row * 1.1f, "MXS Shaders", TEXT_LIGHT);
-	y += row * 1.1f + gap * 3.0f;
+	y += row * 1.1f + gap * 5.0f;
 
 	close_hover = inside(mx, my, x, y, label_w, row);
 	button_box(x, y, label_w, row, close_hover);
@@ -680,12 +682,12 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, const ui_state *
 	}
 	button_box(key_x, y, key_w, row, key_hover);
 	text(key_x + row * 0.2f, y, row, key_label, key_hover ? TEXT_DARK : TEXT_LIGHT);
-	y += row + gap * 3.0f;
+	y += row + gap * 5.0f;
 
 	pack_row(x, y, label_w, value_w, row, mx, my, click, pack);
-	y += row + gap * 3.0f;
+	y += row + gap * 5.0f;
 	tab_row(x, y, panel_w, row, gap, mx, my, click);
-	y += row + gap * 2.0f;
+	y += row + gap * 5.0f;
 
 	items_y = y;
 	for (i = 0; i < g_item_count; i++) {
@@ -697,7 +699,7 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, const ui_state *
 	/* The footer stays put when a shorter page is showing. */
 	y = items_y + g_tab_rows * (row + gap);
 
-	y += gap * 2.0f;
+	y += gap * 4.0f;
 	button_box(x, y, panel_w, row, FALSE);
 	text(x + row * 0.2f, y, row, "*", ASTERISK);
 	text(x + row * 0.2f + text_width("*"), y, row, "Needs a restart", TEXT_LIGHT);

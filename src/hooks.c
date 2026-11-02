@@ -238,7 +238,7 @@ static BOOL g_cursor_hidden;
 static BOOL g_reload_requested, g_enabled_changed;	/* from the panel, done at the frame boundary */
 static int g_cfg_fog, g_cfg_parallax, g_cfg_motion_blur, g_cfg_dof, g_cfg_saturation, g_cfg_contrast, g_cfg_split_tone;
 static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_time_of_day, g_cfg_ui_key, g_cfg_enabled;
-static int g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_sun_disc, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_height, g_cfg_sun_turn;
+static int g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_bloom, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_height, g_cfg_sun_turn;
 static int g_cfg_weather, g_cfg_weather_amount, g_cfg_wet;
 static float g_weather_time;	/* seconds since the first frame, for drifting clouds and falling rain */
 
@@ -1873,6 +1873,110 @@ static void terrain_frame_end(void)
 	memset(g_terrain_seen, 0, sizeof g_terrain_seen);
 }
 
+/*
+ Each model is a VAO that u_modelview places, often hundreds of times a frame, so
+ a sphere around its vertices says where a draw lands on a shadow map. They're read
+ back once per mesh. A mesh that can't be measured has no sphere and is always drawn.
+*/
+#define GL_COPY_READ_BUFFER 0x8F36
+#define GL_BUFFER_SIZE 0x8764
+#define GL_VERTEX_ATTRIB_ARRAY_SIZE 0x8623
+#define GL_VERTEX_ATTRIB_ARRAY_STRIDE 0x8624
+#define GL_VERTEX_ATTRIB_ARRAY_TYPE 0x8625
+#define GL_VERTEX_ATTRIB_ARRAY_POINTER 0x8645
+#define GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING 0x889F
+
+typedef struct {
+	float x, y, z, radius;
+} mesh_sphere;
+
+enum { SPHERE_UNKNOWN, SPHERE_KNOWN, SPHERE_NONE };
+
+typedef GLint (WINAPI *glGetAttribLocation_t)(GLuint, const char *);
+typedef void (WINAPI *glGetVertexAttribiv_t)(GLuint, GLenum, GLint *);
+typedef void (WINAPI *glGetVertexAttribPointerv_t)(GLuint, GLenum, void **);
+typedef void (WINAPI *glGetBufferParameteriv_t)(GLenum, GLenum, GLint *);
+typedef void (WINAPI *glGetBufferSubData_t)(GLenum, ptrdiff_t, ptrdiff_t, void *);
+typedef void (WINAPI *glBindBuffer_t)(GLenum, GLuint);
+
+static glGetAttribLocation_t my_glGetAttribLocation;
+static glGetVertexAttribiv_t my_glGetVertexAttribiv;
+static glGetVertexAttribPointerv_t my_glGetVertexAttribPointerv;
+static glGetBufferParameteriv_t my_glGetBufferParameteriv;
+static glGetBufferSubData_t my_glGetBufferSubData;
+static glBindBuffer_t my_glBindBuffer;
+
+static mesh_sphere g_mesh_sphere[MAX_IDS];
+static unsigned char g_mesh_sphere_state[MAX_IDS];
+
+static BOOL mesh_sphere_measure(mesh_sphere *s)
+{
+	GLint attr, size = 0, type = 0, stride = 0, buffer = 0, bytes = 0;
+	float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+	void *pointer = NULL;
+	unsigned char *data;
+	size_t at, end;
+	int i;
+
+	if (!my_glGetAttribLocation || !my_glGetVertexAttribiv || !my_glGetVertexAttribPointerv ||
+	    !my_glGetBufferParameteriv || !my_glGetBufferSubData || !my_glBindBuffer)
+		return FALSE;
+	attr = my_glGetAttribLocation(g_model_prog, "vattr_position");
+	if (attr < 0)
+		return FALSE;
+	my_glGetVertexAttribiv(attr, GL_VERTEX_ATTRIB_ARRAY_SIZE, &size);
+	my_glGetVertexAttribiv(attr, GL_VERTEX_ATTRIB_ARRAY_TYPE, &type);
+	my_glGetVertexAttribiv(attr, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &stride);
+	my_glGetVertexAttribiv(attr, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buffer);
+	my_glGetVertexAttribPointerv(attr, GL_VERTEX_ATTRIB_ARRAY_POINTER, &pointer);
+	if (size < 3 || type != GL_FLOAT || !buffer)
+		return FALSE;
+	if (!stride)
+		stride = size * (int)sizeof(float);
+
+	my_glBindBuffer(GL_COPY_READ_BUFFER, buffer);
+	my_glGetBufferParameteriv(GL_COPY_READ_BUFFER, GL_BUFFER_SIZE, &bytes);
+	data = bytes > 0 ? malloc(bytes) : NULL;
+	if (data)
+		my_glGetBufferSubData(GL_COPY_READ_BUFFER, 0, bytes, data);
+	my_glBindBuffer(GL_COPY_READ_BUFFER, 0);
+	if (!data)
+		return FALSE;
+
+	end = bytes;
+	for (at = (size_t)pointer; at + 3 * sizeof(float) <= end; at += stride) {
+		float p[3];
+
+		memcpy(p, data + at, sizeof p);
+		for (i = 0; i < 3; i++) {
+			lo[i] = min(lo[i], p[i]);
+			hi[i] = max(hi[i], p[i]);
+		}
+	}
+	free(data);
+	if (lo[0] > hi[0])
+		return FALSE;
+
+	s->x = (lo[0] + hi[0]) * 0.5f;
+	s->y = (lo[1] + hi[1]) * 0.5f;
+	s->z = (lo[2] + hi[2]) * 0.5f;
+	s->radius = 0.5f * (float)sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+				       (hi[2] - lo[2]) * (hi[2] - lo[2]));
+	return TRUE;
+}
+
+/* For the model about to be drawn with the current VAO. */
+static const mesh_sphere *mesh_sphere_current(void)
+{
+	GLuint vao = g_cur_vao;
+
+	if (vao >= MAX_IDS)
+		return NULL;
+	if (g_mesh_sphere_state[vao] == SPHERE_UNKNOWN)
+		g_mesh_sphere_state[vao] = mesh_sphere_measure(&g_mesh_sphere[vao]) ? SPHERE_KNOWN : SPHERE_NONE;
+	return g_mesh_sphere_state[vao] == SPHERE_KNOWN ? &g_mesh_sphere[vao] : NULL;
+}
+
 static void fbo_destroy(void)
 {
 	if (!g_fbo)
@@ -1993,7 +2097,7 @@ static void run_post(void)
 	s.contrast = g_cfg_contrast / 100.0f;
 	s.split_tone = g_cfg_split_tone / 100.0f;
 	s.sharpen = g_cfg_sharpen / 100.0f;
-	s.sun_disc = g_cfg_sun_disc / 100.0f;
+	s.bloom = g_cfg_bloom / 100.0f;
 	s.lens_flare = g_cfg_lens_flare / 100.0f;
 	s.goggles = g_cfg_goggles && g_frame_trimmed;
 	s.sun_moved = sun_moved() ? 1.0f : 0.0f;
@@ -2097,6 +2201,7 @@ static void present(HDC dc)
 /* --- the settings panel --- */
 
 static const int g_shadow_sizes[] = { 1024, 2048, 4096, 8192 };
+static const char *const g_shadow_names[] = { "Low", "Medium", "High", "Ultra" };
 static const int g_msaa_levels[] = { 0, 2, 4, 8 };
 static const int g_aniso_levels[] = { 1, 2, 4, 8, 16 };
 static const int g_weather_kinds[] = { WEATHER_CLEAR, WEATHER_CLOUDY, WEATHER_RAIN, WEATHER_STORM, WEATHER_SNOW };
@@ -2104,7 +2209,7 @@ static const char *const g_weather_names[] = { "Clear", "Cloudy", "Rain", "Storm
 
 #define SLIDER(tab, label, key, var, lo, hi, step) { label, key, UI_SLIDER, &var, lo, hi, step, NULL, 0, FALSE, NULL, tab }
 #define CHOICE(tab, label, key, var, list) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], TRUE, NULL, tab }
-#define NAMED_CHOICE(tab, label, key, var, list, names) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], FALSE, names, tab }
+#define NAMED_CHOICE(tab, label, key, var, list, names, restart) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], restart, names, tab }
 #define TOGGLE(tab, label, key, var, restart) { label, key, UI_TOGGLE, &var, 0, 0, 0, NULL, 0, restart, NULL, tab }
 
 static const ui_item g_ui_items[] = {
@@ -2117,21 +2222,21 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_LOOK, "Split Toning", L"split_tone", g_cfg_split_tone, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Sharpen", L"sharpen", g_cfg_sharpen, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Texture Sharpness", L"texture_sharpness", g_cfg_texture_sharpness, 0, 100, 5),
+	SLIDER(UI_TAB_LOOK, "Bloom", L"bloom", g_cfg_bloom, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Lens Flare", L"lens_flare", g_cfg_lens_flare, 0, 200, 5),
 	TOGGLE(UI_TAB_LOOK, "Goggles in First Person", L"goggles", g_cfg_goggles, FALSE),
 
 	SLIDER(UI_TAB_WEATHER, "Day to Night", L"time_of_day", g_cfg_time_of_day, 0, 100, 5),
-	NAMED_CHOICE(UI_TAB_WEATHER, "Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names),
+	NAMED_CHOICE(UI_TAB_WEATHER, "Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names, FALSE),
 	SLIDER(UI_TAB_WEATHER, "Weather Strength", L"weather_amount", g_cfg_weather_amount, 0, 100, 5),
 	SLIDER(UI_TAB_WEATHER, "Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
-	SLIDER(UI_TAB_WEATHER, "Sun Disc", L"sun_disc", g_cfg_sun_disc, 0, 200, 5),
 	SLIDER(UI_TAB_WEATHER, "Sun Height (0 Track)", L"sun_height", g_cfg_sun_height, 0, 90, 1),
 	SLIDER(UI_TAB_WEATHER, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
 	SLIDER(UI_TAB_WEATHER, "Shadow Distance", L"shadow_range", g_cfg_shadow_range, 20, 500, 10),
 
 	TOGGLE(UI_TAB_DISPLAY, "Hide Game HUD", L"hide_hud", g_cfg_hide_hud, FALSE),
 	TOGGLE(UI_TAB_DISPLAY, "Hide Cursor in Race", L"hide_cursor", g_cfg_hide_cursor, FALSE),
-	CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes),
+	NAMED_CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes, g_shadow_names, TRUE),
 	CHOICE(UI_TAB_DISPLAY, "Antialiasing", L"msaa", g_cfg_msaa, g_msaa_levels),
 	CHOICE(UI_TAB_DISPLAY, "Texture Filtering", L"anisotropy", g_cfg_aniso, g_aniso_levels),
 	TOGGLE(UI_TAB_DISPLAY, "Borderless Window", L"borderless", g_cfg_borderless, TRUE),
@@ -2277,6 +2382,12 @@ static void context_ready(HDC dc)
 	MY(glEndQuery);
 	MY(glGetQueryObjectiv);
 	MY(glGetQueryObjectui64v);
+	MY(glGetAttribLocation);
+	MY(glGetVertexAttribiv);
+	MY(glGetVertexAttribPointerv);
+	MY(glGetBufferParameteriv);
+	MY(glGetBufferSubData);
+	MY(glBindBuffer);
 	MY(glDebugMessageCallback);
 	MY(glProgramUniformMatrix4fv);
 	MY(glProgramUniform1i);
@@ -2390,6 +2501,7 @@ HOOK(void, glDrawElements, (GLenum mode, GLsizei count, GLenum type, const void 
 	{
 		int kind = shadow_draw_kind();
 		int slot = kind == DRAW_DYNAMIC && rider_draw() ? full_mesh_slot(count, type, indices) : 0;
+		const mesh_sphere *sphere = kind == DRAW_STATIC && g_cur_prog == g_model_prog ? mesh_sphere_current() : NULL;
 
 		if (slot)
 			skinned_draw_seen(slot, count, type, indices);
@@ -2400,7 +2512,7 @@ HOOK(void, glDrawElements, (GLenum mode, GLsizei count, GLenum type, const void 
 		} else if (kind == DRAW_STATIC && g_cur_prog == g_terrain_prog) {
 			terrain_draw_seen(count, type, indices);
 		}
-		rec(REC_DRAWELEMENTS, mode, count, type, slot, kind, (size_t)indices, NULL, 0);
+		rec(REC_DRAWELEMENTS, mode, count, type, slot, kind, (size_t)indices, sphere, sphere ? sizeof *sphere : 0);
 	}
 	if (!hud_draw_hidden())
 		real_glDrawElements(mode, count, type, indices);
@@ -3027,8 +3139,8 @@ static void load_live_settings(void)
 	g_cfg_split_tone = pack_int(L"split_tone", 20);
 	g_cfg_sharpen = pack_int(L"sharpen", 30);
 	g_cfg_texture_sharpness = pack_int(L"texture_sharpness", 0);
+	g_cfg_bloom = pack_int(L"bloom", 100);
 	g_cfg_lens_flare = pack_int(L"lens_flare", 50);
-	g_cfg_sun_disc = pack_int(L"sun_disc", 0);
 	g_cfg_sun_height = pack_int(L"sun_height", 0);
 	g_cfg_sun_turn = pack_int(L"sun_turn", 0);
 	g_cfg_goggles = ini_int(L"goggles", 0);
@@ -3091,6 +3203,8 @@ HOOK(void, glBufferData, (GLenum target, ptrdiff_t size, const void *data, GLenu
 {
 	if (target == GL_ELEMENT_ARRAY_BUFFER && g_cur_vao < MAX_IDS)
 		g_mesh_bytes[g_cur_vao] = size;
+	if (g_cur_vao < MAX_IDS)
+		g_mesh_sphere_state[g_cur_vao] = SPHERE_UNKNOWN;
 	real_glBufferData(target, size, data, usage);
 }
 
@@ -3111,8 +3225,10 @@ HOOK(void, glDeleteVertexArrays, (GLsizei n, const GLuint *arrays))
 			g_terrain_count = 0;
 			g_terrain_heights = 0;
 		}
-		if (arrays[i] < MAX_IDS)
+		if (arrays[i] < MAX_IDS) {
 			g_mesh_bytes[arrays[i]] = 0;
+			g_mesh_sphere_state[arrays[i]] = SPHERE_UNKNOWN;
+		}
 		for (j = 0; j < g_rigid_parts; j++)
 			if (g_rigid[j].vao == arrays[i])
 				g_rigid_parts = 0;
@@ -3224,9 +3340,41 @@ static void shadow_pass_uniforms(GLuint prog, const float *projection, int pass)
 
 #define REPLAY_STATE_ONLY -1
 
+/* Sideways on the map only: a block any way along the sun's line can still shade what's on it. */
+static BOOL terrain_block_on_map(int cascade, float x, float z, float scale)
+{
+	const float *m = g_light_matrix[cascade];
+	float range = cascade ? SHADOW_NEAR_RANGE : (float)g_cfg_shadow_range;
+	float cx = x + scale * 0.5f, cz = z + scale * 0.5f;
+	float reach = 1.0f + (scale * 0.71f + TERRAIN_HEIGHT_MARGIN) / range;
+
+	return fabs(m[0] * cx + m[4] * g_camera_y + m[8] * cz + m[12]) <= reach &&
+	       fabs(m[1] * cx + m[5] * g_camera_y + m[9] * cz + m[13]) <= reach;
+}
+
+/* Sideways only as well. The small extra keeps a caster at the edge for the shadow's soft samples. */
+static BOOL sphere_on_map(int cascade, const float *mv, const mesh_sphere *s)
+{
+	const float *m = g_shadow_from_view[cascade];
+	float x = mv[0] * s->x + mv[4] * s->y + mv[8] * s->z + mv[12];
+	float y = mv[1] * s->x + mv[5] * s->y + mv[9] * s->z + mv[13];
+	float z = mv[2] * s->x + mv[6] * s->y + mv[10] * s->z + mv[14];
+	float grow = (float)sqrt(max(max(mv[0] * mv[0] + mv[1] * mv[1] + mv[2] * mv[2],
+					 mv[4] * mv[4] + mv[5] * mv[5] + mv[6] * mv[6]),
+				     mv[8] * mv[8] + mv[9] * mv[9] + mv[10] * mv[10]));
+	float r = s->radius * grow;
+
+	return fabs(m[0] * x + m[4] * y + m[8] * z + m[12]) <= 1.02f + r * (float)sqrt(m[0] * m[0] + m[4] * m[4] + m[8] * m[8]) &&
+	       fabs(m[1] * x + m[5] * y + m[9] * z + m[13]) <= 1.02f + r * (float)sqrt(m[1] * m[1] + m[5] * m[5] + m[9] * m[9]);
+}
+
 static void replay_stream(const unsigned char *stream, size_t used, GLuint prog, GLuint vao, int cascade)
 {
 	BOOL state_only = cascade == REPLAY_STATE_ONLY;
+	uni_entry *offset = prog_uniform(g_terrain_prog, "u_meshoffset"), *scale = prog_uniform(g_terrain_prog, "u_meshscale");
+	GLint offset_real = offset ? offset->real : -1, scale_real = scale ? scale->real : -1;
+	const float *block_offset = NULL, *model_view = NULL;
+	float block_scale = 0.0f;
 	int dynamic_now = 0;
 	size_t at = 0;
 
@@ -3245,6 +3393,26 @@ static void replay_stream(const unsigned char *stream, size_t used, GLuint prog,
 			dynamic_now = c->e == DRAW_DYNAMIC;
 			my_glProgramUniformMatrix4fv(prog, g_loc_proj[prog], 1, 0, dynamic_now ?
 						     g_shadow_from_view_dyn[cascade] : g_shadow_from_view[cascade]);
+		}
+
+		/* Scenery is drawn for the view too, and little of it is near the near map. */
+		if (prog == g_model_prog) {
+			if (c->type == REC_UNIFORMMAT4 && c->a == g_loc_mv[prog] && c->b == 1 && !c->c)
+				model_view = f;
+			else if (c->type == REC_DRAWELEMENTS && c->e == DRAW_STATIC && c->size && model_view &&
+				 !sphere_on_map(cascade, model_view, (const mesh_sphere *)f))
+				continue;
+		}
+
+		/* The game draws terrain for its view, much of it off the shadow map's sides. */
+		if (prog == g_terrain_prog) {
+			if (c->type == REC_UNIFORM2FV && c->a == offset_real)
+				block_offset = f;
+			else if (c->type == REC_UNIFORM1F && c->a == scale_real)
+				block_scale = f[0];
+			else if ((c->type == REC_DRAWELEMENTS || c->type == REC_DRAWRANGE) && block_offset && block_scale > 0.0f &&
+				 !terrain_block_on_map(cascade, block_offset[0], block_offset[1], block_scale))
+				continue;
 		}
 
 		switch (c->type) {
@@ -3334,8 +3502,6 @@ static void draw_terrain_fill(int cascade)
 {
 	uni_entry *offset = prog_uniform(g_terrain_prog, "u_meshoffset"), *scale = prog_uniform(g_terrain_prog, "u_meshscale");
 	uni_entry *heights = prog_uniform(g_terrain_prog, "u_heights");
-	const float *m = g_light_matrix[cascade];
-	float range = cascade ? SHADOW_NEAR_RANGE : (float)g_cfg_shadow_range;
 	int i;
 
 	if (!g_terrain_fill_count || !offset || !scale || !heights || offset->real < 0 || scale->real < 0)
@@ -3348,12 +3514,9 @@ static void draw_terrain_fill(int cascade)
 
 	for (i = 0; i < g_terrain_fill_count; i++) {
 		const terrain_block *b = &g_terrain_fill[i];
-		float cx = b->x + b->scale * 0.5f, cz = b->z + b->scale * 0.5f;
-		float reach = 1.0f + (b->scale * 0.71f + TERRAIN_HEIGHT_MARGIN) / range;
 		float block_offset[2];
 
-		if (fabs(m[0] * cx + m[4] * g_camera_y + m[8] * cz + m[12]) > reach ||
-		    fabs(m[1] * cx + m[5] * g_camera_y + m[9] * cz + m[13]) > reach)
+		if (!terrain_block_on_map(cascade, b->x, b->z, b->scale))
 			continue;
 		block_offset[0] = b->x;
 		block_offset[1] = b->z;

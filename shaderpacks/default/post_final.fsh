@@ -9,7 +9,7 @@ uniform sampler2D u_color, u_ao, u_bloom, u_depth, u_shafts;
 uniform float u_proj_a, u_proj_b, u_fx, u_fy;
 uniform float u_camera_height;	/* above the ground around the rider */
 uniform float u_fog_amount;	/* the fog setting in mxs-shaders.ini, 1 at 100 */
-uniform float u_sharpen, u_sun_disc;	/* the settings, 1 at 100 */
+uniform float u_sharpen, u_bloom_amount;	/* the settings, 1 at 100 */
 uniform vec3 u_up, u_sun, u_fog_color;
 
 #include "common.glsl"
@@ -34,10 +34,6 @@ const float SHAFT_AMBIENT = 0.12;	/* beams away from the sun, nearly invisible *
 /* At 100, the most a pixel's neighbours take away. Above 0.25 the result would flip. */
 const float SHARPEN_PEAK = 0.09;
 
-const float SUN_RADIUS = 0.009;		/* radians, a little more than the real sun so it reads on screen */
-const float SUN_BRIGHT = 30.0;
-const float SUN_GLOW = 0.35, SUN_GLOW_WIDTH = 0.06;
-
 /*
  Contrast adaptive sharpening: each pixel pushes away from its four neighbours,
  less where they already differ a lot, so edges don't ring and flat areas stay
@@ -54,17 +50,6 @@ vec3 sharpen(vec3 c)
 	vec3 weight = -sqrt(clamp(lo / max(hi, vec3(0.0001)), 0.0, 1.0)) * min(SHARPEN_PEAK * u_sharpen, 0.2);
 
 	return max((c + (n + s + e + w) * weight) / (1.0 + 4.0 * weight), vec3(0.0));
-}
-
-/* The sun and its glow where the sky shows, for skies painted without one. */
-vec3 sun_disc(vec3 dir)
-{
-	vec3 sun = normalize(u_sun);
-	float angle = acos(clamp(dot(dir, sun), -1.0, 1.0));
-	float disc = 1.0 - smoothstep(SUN_RADIUS * 0.8, SUN_RADIUS, angle);
-	float above = smoothstep(-0.02, 0.02, dot(sun, normalize(u_up)));
-
-	return SUN_SCATTER * (disc * SUN_BRIGHT + exp(-angle / SUN_GLOW_WIDTH) * SUN_GLOW) * above * u_sun_disc * (1.0 - u_night);
 }
 
 /* Rain greys the haze and thickens it, snow whitens it. Gamma encoded like the game's fog. */
@@ -209,8 +194,6 @@ vec3 atmosphere(vec3 c)
 
 	if (depth < 1.0)
 		dist = u_proj_b / (depth * 2.0 - 1.0 + u_proj_a) * length(ray);
-	else if (u_sun_disc > 0.0)
-		c += sun_disc(dir) * clouds;
 
 	/* Density falls with height, so this is its exact integral along the ray. */
 	climb = max(dot(dir, normalize(u_up)) * dist / FOG_HEIGHT, -FOG_MAX_DESCENT);
@@ -241,7 +224,8 @@ void main()
 	c = atmosphere(c);
 	c = precipitation(c, dir, dist, flash);
 	c *= 1.0 + flash * LIGHTNING_BRIGHT;
-	c += texture(u_bloom, v_uv).rgb * BLOOM_STRENGTH;
+	if (u_bloom_amount > 0.0)
+		c += texture(u_bloom, v_uv).rgb * BLOOM_STRENGTH * u_bloom_amount;
 
 	f_color = vec4(c, 1.0);
 }

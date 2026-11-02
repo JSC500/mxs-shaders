@@ -48,6 +48,7 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 | `saturation` | 110 | 0 to 200 | Colour strength. 100 leaves colours as they are, 0 is black and white |
 | `contrast` | 20 | 0 to 100 | Darker shadows and brighter highlights |
 | `split_tone` | 20 | 0 to 100 | Cool shadows and warm highlights |
+| `bloom` | 100 | 0 to 200 | Glow around bright things, 0 turns it off |
 | `shadow_range` | 500 | 20 to 500 | How far shadows reach. Raise `shadow_size` with it to keep shadows sharp |
 | `shadow_size` | 8192 | 1024, 2048, 4096, 8192 | Shadow sharpness. Lower it on older GPUs, 8192 uses about 512 MB of video memory |
 | `msaa` | 8 | 0, 2, 4, 8 | Edge smoothing, 0 turns it off |
