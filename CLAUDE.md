@@ -11,7 +11,10 @@ This project aims to bring improved visuals such as shadows from real time dynam
 - `src/`: the `opengl32.dll` proxy. `hooks.c` is the GL hooks, shadows and recording, `post.c` the post passes, `ui.c` the F8 panel, `pack.c` shader packs.
 - `shaderpacks/default/`: the default pack, built into the DLL by `scripts/gen_pack.ps1`.
 - `shaderpacks/psx/`: an optional PS1 look. It isn't built in, it ships as `psx-pack.zip`.
-- `%LOCALAPPDATA%\mxs-shaders`: everything at runtime: `game\` (the dev copy of the game), `mxs-shaders.ini`, `mxs-shaders.log`, `frames\`, `shaders\`, `riders\`, `shaderpacks\`.
+- `shaderpacks/iMotoWeatherPack/`: Deband, Daltonize and DisplayDepth translated from ReShade, run after the default lens. Their settings are constants in `reshade.glsl`.
+- `%LOCALAPPDATA%\mxs-shaders`: everything at runtime: `game\` (the dev copy of the game, if there is one), `mxs-shaders.ini`, `mxs-shaders.log`, `frames\`, `shaders\`, `riders\`, `shaderpacks\`.
+
+Only the repo's own code belongs here. Andre's MXS Effects is a closed, licensed ReShade add-on: its features can be rebuilt from what they're described to do, but don't decompile it or commit its files, or any other author's.
 
 ## Build
 Run this from PowerShell in the repository root. There's no Python or `strings` on the dev machine.
@@ -20,14 +23,16 @@ Run this from PowerShell in the repository root. There's no Python or `strings` 
 cmd /c "`"$PWD\build.bat`"" | Select-String -Pattern 'error|warning|Built'
 ```
 
-The `vswhere.exe` line in the output is harmless. `build.bat` deploys the DLL and pack to `%LOCALAPPDATA%\mxs-shaders`, overwriting the deployed pack. Shader-only changes don't need a build: copy the file to `%LOCALAPPDATA%\mxs-shaders\shaderpacks\default`, and **Reload Current Shader** in the F8 panel, shown with `debug=1`, reloads it in a running game. Don't change the user's own `mxs-shaders.ini` values without saying so.
+`build.bat` finds Visual Studio with the C++ tools through `vswhere`, and the `vswhere.exe` line in the output, from Visual Studio's own setup script, is harmless. It deploys the pack to `%LOCALAPPDATA%\mxs-shaders`, overwriting the deployed pack, and the DLL to the dev copy when there is one. Shader-only changes don't need a build: copy the file to `%LOCALAPPDATA%\mxs-shaders\shaderpacks\default`, and **Reload Current Shader** in the F8 panel, shown with `debug=1`, reloads it in a running game. Don't change the user's own `mxs-shaders.ini` values without saying so.
 
 ## Testing with the user
-Always test in the dev copy, because the real game folder needs admin. Most features need a person in the game, so:
+Test in the dev copy when there is one, because the default game folder needs admin. Without one, the game folder is the test install: ask before copying `build\opengl32.dll` into it, or let the user copy it. Most features need a person in the game, so:
 
 1. Check `Get-Process mx` first. A running game locks the DLL.
 2. Tell the user before launching. List what to do and what to look for in short numbered steps, including anything that has to happen in a set order, such as chase view then first person.
 3. Launch with PowerShell, `run_in_background: true`, and wait for the notification when they quit. Don't poll.
+
+With no dev copy, set `$g` to the game folder instead.
 
 ```powershell
 $g="$env:LOCALAPPDATA\mxs-shaders\game"; $p=Start-Process -FilePath "$g\mx.exe" -WorkingDirectory $g -PassThru; $p.WaitForExit(); "exit $($p.ExitCode)"
@@ -55,6 +60,16 @@ $s.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
 ## Testing without the user
 For anything that happens before a race, such as first-run behaviour, packs and defaults, start the game against an empty profile by pointing `LOCALAPPDATA` at a scratch folder, wait for `wglSwapBuffers reached` in that folder's log, then close it. This leaves the user's settings alone. Warn the user first, because a game window opens briefly.
 
+The game compiles every shader at startup, so this also checks that pack changes compile: look for `post-processing ready` and the `role ... using pack shader` lines, and no `failed`. If the installed DLL is older than the source, put the changed default-pack files in the scratch folder's `shaderpacks\default`. Files on disk override the built-in pack, so the new shaders are tested without touching the install.
+
+## How the mod works
+- **Texture units:** the shadow maps use 8-9, the post passes 10-16, the F8 panel's font 17 and the weather noise 18. A new texture that stays bound needs its own unit above these.
+- **Performance:** dust particles and models overdraw a lot, so anything per pixel in `terrain.fsh`, `model.fsh` or `sprite.fsh` multiplies. Procedural noise there cost a big drop in fps: precompute it into a texture, like `weather_noise_create`, and put work behind uniform checks so it costs nothing when it's off.
+- **Weather:** `common.glsl` holds the weather code that every pack shader shares. Anything that has to stay fixed to the track goes through `u_world_from_view`, which `weather_apply` sends to the game's programs each frame and `post.c` sends to the post passes. Rain and snow are drawn around the camera in post, so they don't stay in place as the camera moves, and puddles reflect only the sky.
+- **Sun override:** Sun Height and Sun Turn change the sun's world direction in `sun_effective`, and the result replaces `u_light_position` everywhere, including the game's own shading. The light can arrive before the frame's camera, so that shading may be a frame behind while the camera turns.
+- **Exposure texture:** a 1x1 RGBA16F target eased over frames: red is the average brightness, green the distance in focus, blue how much of the sun is in sight, for the lens flare.
+- **F8 panel:** settings are split into the Look, Sun & Weather and Display tabs, and each new item needs one. Row height follows the longest tab. Sliders are saved per pack, toggles and choices in the main section.
+
 ## How the game behaves
 - **Sprites:** the sprite shader also draws terrain tiles into the game's own framebuffer, so screen-only effects must check the framebuffer first. `sprite_set_mode` handles this. Missing it caused big rectangles on the ground.
 - **Skinned draws:** their modelview sits about 2,000 units from the bike, because the bone translations hold the rider's world position. Measure distances from posed bones.
@@ -69,6 +84,6 @@ For anything that happens before a race, such as first-run behaviour, packs and 
 - **Terrain:** the game draws only the terrain blocks near the view, 161 to 599 draws a frame depending on the camera, while model draws stay at about 1,250. A hill leaving the view would take its shadow with it, block by block. All terrain comes from one height texture, with blocks placed by `u_meshoffset` and `u_meshscale` (30 to 241 units on the test track, each mesh one scale across), so `draw_terrain_fill` adds the blocks the game skipped to the shadow maps, in the largest size that fits the gaps.
 - **Sprites and shadows:** sprites don't cast shadows, and the camera-dependent sprite draws aren't what was removing them.
 - **Baked terrain shadows:** the decal shader writes a baked shadow into the green channel of the terrain normal maps, and the game and `terrain.fsh` multiply sunlight by it. Ignoring it in a test didn't change the shadows that vanish in rectangles.
-- **Time of day:** the game gives one light per track and no way to tell a night track, so `time_of_day` is a global setting the player changes. It fades the sun effects through `u_night`, and at 100 the shadow maps aren't drawn. Stadium floodlights have no data in the game, so they'd need placing by hand.
+- **Time of day:** the game gives one light per track and no way to tell a night track, so `time_of_day` is a global setting the player changes. It fades the sun effects through `u_night`, and at 100 the shadow maps aren't drawn. From 50 up, post adds stars and a moon where the sky is clear. Stadium floodlights have no data in the game, so they'd need placing by hand.
 - **Reflections:** the game draws nearly every model a second time with the reflection shader, added over the lit one. Screen-space reflections were tried there, marching through last frame's scene, and removed because they were barely visible. In practice only the bikes reflect strongly, and their surfaces mostly face the camera or the sky, which reflect what isn't on screen.
 - **Units:** game units aren't metres. The camera moves about 65 units per second at a displayed speed of about 39.
