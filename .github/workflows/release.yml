@@ -26,11 +26,14 @@ jobs:
       - name: Package the shader packs
         shell: pwsh
         run: |
-          Compress-Archive -Path shaderpacks\default -DestinationPath build\default-pack.zip
-          Compress-Archive -Path shaderpacks\psx -DestinationPath build\psx-pack.zip
+          Get-ChildItem shaderpacks -Directory | ForEach-Object {
+            Compress-Archive -Path $_.FullName -DestinationPath "build\$($_.Name)-pack.zip"
+          }
 
       - name: Publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" build\opengl32.dll build\default-pack.zip build\psx-pack.zip --generate-notes
+        run: |
+          $packs = (Get-ChildItem build\*-pack.zip).FullName
+          gh release create "${{ github.ref_name }}" build\opengl32.dll $packs --generate-notes

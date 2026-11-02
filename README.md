@@ -68,6 +68,10 @@ For a PS1 style, download `psx-pack.zip` from the Releases page and extract the 
 
 ![The PSX look](example%20screenshots/psx.webp)
 
+### iMoto Weather Pack
+
+The default look with Deband, Daltonize and DisplayDepth translated from ReShade. Download `iMotoWeatherPack-pack.zip` from the Releases page, extract the `iMotoWeatherPack` folder into `%LOCALAPPDATA%\mxs-shaders\shaderpacks`, and pick it on the Shader Pack row of the F8 panel.
+
 ### Borderless fullscreen to avoid black screen when alt-tabbing
 
 Set the game's video mode to windowed. With `borderless` on, which is the default, the window then covers the whole screen and the monitor stays on. Set it to 0 for a normal window.

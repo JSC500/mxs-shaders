@@ -11,7 +11,7 @@ This project aims to bring improved visuals such as shadows from real time dynam
 - `src/`: the `opengl32.dll` proxy. `hooks.c` is the GL hooks, shadows and recording, `post.c` the post passes, `ui.c` the F8 panel, `pack.c` shader packs.
 - `shaderpacks/default/`: the default pack, built into the DLL by `scripts/gen_pack.ps1`.
 - `shaderpacks/psx/`: an optional PS1 look. It isn't built in, it ships as `psx-pack.zip`.
-- `shaderpacks/iMotoWeatherPack/`: Deband, Daltonize and DisplayDepth translated from ReShade, run after the default lens. Their settings are constants in `reshade.glsl`.
+- `shaderpacks/iMotoWeatherPack/`: Deband, Daltonize and DisplayDepth translated from ReShade, run after the default lens. Their settings are constants in `reshade.glsl`. It isn't built in, it ships as `iMotoWeatherPack-pack.zip`. The release packs every folder in `shaderpacks/` as `<name>-pack.zip`.
 - `%LOCALAPPDATA%\mxs-shaders`: everything at runtime: `game\` (the dev copy of the game, if there is one), `mxs-shaders.ini`, `mxs-shaders.log`, `frames\`, `shaders\`, `riders\`, `shaderpacks\`.
 
 Only the repo's own code belongs here. Andre's MXS Effects is a closed, licensed ReShade add-on: its features can be rebuilt from what they're described to do, but don't decompile it or commit its files, or any other author's.
