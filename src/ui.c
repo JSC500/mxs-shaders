@@ -109,6 +109,10 @@ static int g_dragging = -1;
 static wchar_t g_packs[MAX_PACKS][64];
 static int g_pack_count;
 
+static const char *const g_tab_names[UI_TABS] = { "Look", "Sun & Weather", "Display" };
+static int g_tab;		/* the page showing, kept while the game runs */
+static int g_tab_rows;		/* the longest page, which sets the row height */
+
 static const char *const g_vs =
 	"#version 150\n"
 	"in vec2 a_pos, a_uv;\n"
@@ -152,9 +156,12 @@ void ui_init(PROC (WINAPI *get_proc)(LPCSTR), const ui_item *items, int count)
 {
 	GLuint vs, fs;
 	GLint ok = 0;
+	int rows[UI_TABS] = { 0 }, i;
 
 	g_items = items;
 	g_item_count = count;
+	for (i = 0; i < count; i++)
+		g_tab_rows = max(g_tab_rows, ++rows[items[i].tab]);
 
 	LOAD_GL11(gl_Enable, "glEnable");
 	LOAD_GL11(gl_Disable, "glDisable");
@@ -572,6 +579,23 @@ static void item_row(int index, float x, float y, float label_w, float value_w, 
 	}
 }
 
+/* The pages across the panel, the one showing lit like a selected menu row. */
+static void tab_row(float x, float y, float w, float row, float gap, float mx, float my, BOOL click)
+{
+	float tab_w = (w - gap * (UI_TABS - 1)) / UI_TABS;
+	int t;
+
+	for (t = 0; t < UI_TABS; t++) {
+		float tx = x + t * (tab_w + gap);
+		BOOL lit = t == g_tab || inside(mx, my, tx, y, tab_w, row);
+
+		button_box(tx, y, tab_w, row, lit);
+		text(tx + (tab_w - text_width(g_tab_names[t])) * 0.5f, y, row, g_tab_names[t], lit ? TEXT_DARK : TEXT_LIGHT);
+		if (lit && click)
+			g_tab = t;
+	}
+}
+
 /* The first key to go down since the last call, not counting the mouse buttons. */
 static int key_pressed(void)
 {
@@ -599,9 +623,9 @@ static void key_name(int vk, char *name, int size)
 
 static void panel(HWND game, int w, int h, const wchar_t *pack, const ui_state *s)
 {
-	/* Rows shrink to fit every item, with the header and footer taking about eight. */
-	float row = (float)(int)(h / (g_item_count * 1.22f + 7.6f)), gap = (float)(int)(row * 0.22f);
-	float panel_w = min(w * 0.92f, h * 1.5f), x = (w - panel_w) * 0.5f, y = h * 0.05f;
+	/* Rows fit the longest page plus about nine for the header, tabs and footer, never bigger than before. */
+	float row = (float)(int)(h / max(g_tab_rows * 1.22f + 9.0f, 26.0f)), gap = (float)(int)(row * 0.22f);
+	float panel_w = min(w * 0.92f, h * 1.5f), x = (w - panel_w) * 0.5f, y = h * 0.05f, items_y;
 	float label_w = (float)(int)(panel_w * 0.36f), value_w = panel_w - label_w, mx, my, key_x, key_w;
 	BOOL down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, click = down && !g_mouse_was_down, close_hover, reload_hover = FALSE, key_hover, off_hover;
 	char key_label[48] = "Press a Key";
@@ -659,11 +683,19 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, const ui_state *
 	y += row + gap * 3.0f;
 
 	pack_row(x, y, label_w, value_w, row, mx, my, click, pack);
-	y += row + gap;
+	y += row + gap * 3.0f;
+	tab_row(x, y, panel_w, row, gap, mx, my, click);
+	y += row + gap * 2.0f;
+
+	items_y = y;
 	for (i = 0; i < g_item_count; i++) {
+		if (g_items[i].tab != g_tab)
+			continue;
 		item_row(i, x, y, label_w, value_w, row, mx, my, down, click);
 		y += row + gap;
 	}
+	/* The footer stays put when a shorter page is showing. */
+	y = items_y + g_tab_rows * (row + gap);
 
 	y += gap * 2.0f;
 	button_box(x, y, panel_w, row, FALSE);

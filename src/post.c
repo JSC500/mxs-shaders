@@ -63,7 +63,7 @@
 #define UNIT_SRC 14
 #define UNIT_EXPOSURE 15
 #define UNIT_SHAFTS 16
-#define UNIT_WEATHER_NOISE 17	/* hooks.c keeps the weather noise bound there */
+#define UNIT_WEATHER_NOISE 18	/* hooks.c keeps the weather noise bound there */
 
 typedef void (WINAPI *cap_fn)(GLenum);
 typedef GLboolean (WINAPI *isenabled_fn)(GLenum);

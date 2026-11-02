@@ -760,9 +760,10 @@ static BOOL build_light_matrix(float *m, const float *inv_view, float range, int
 
 /*
  Tiling noise for the weather, so a cloud, puddle or snow lookup is one texture
- read instead of sixteen hashes in every pixel. Units above the post passes' 10-16.
+ read instead of sixteen hashes in every pixel. Its unit is above the post passes'
+ 10-16 and the panel's font at 17.
 */
-#define WEATHER_NOISE_UNIT 17
+#define WEATHER_NOISE_UNIT 18
 #define WEATHER_NOISE_SIZE 256
 #define WEATHER_NOISE_CELLS 8	/* lowest octave's cells across, match NOISE_CELLS in common.glsl */
 #define WEATHER_NOISE_LEVELS 7	/* down to 4x4, below that rows would need unpack padding */
@@ -2101,36 +2102,39 @@ static const int g_aniso_levels[] = { 1, 2, 4, 8, 16 };
 static const int g_weather_kinds[] = { WEATHER_CLEAR, WEATHER_CLOUDY, WEATHER_RAIN, WEATHER_STORM, WEATHER_SNOW };
 static const char *const g_weather_names[] = { "Clear", "Cloudy", "Rain", "Storm", "Snow" };
 
-#define SLIDER(label, key, var, lo, hi, step) { label, key, UI_SLIDER, &var, lo, hi, step, NULL, 0, FALSE }
-#define CHOICE(label, key, var, list) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], TRUE }
-#define NAMED_CHOICE(label, key, var, list, names) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], FALSE, names }
+#define SLIDER(tab, label, key, var, lo, hi, step) { label, key, UI_SLIDER, &var, lo, hi, step, NULL, 0, FALSE, NULL, tab }
+#define CHOICE(tab, label, key, var, list) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], TRUE, NULL, tab }
+#define NAMED_CHOICE(tab, label, key, var, list, names) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], FALSE, names, tab }
+#define TOGGLE(tab, label, key, var, restart) { label, key, UI_TOGGLE, &var, 0, 0, 0, NULL, 0, restart, NULL, tab }
 
 static const ui_item g_ui_items[] = {
-	SLIDER("Day to Night", L"time_of_day", g_cfg_time_of_day, 0, 100, 5),
-	NAMED_CHOICE("Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names),
-	SLIDER("Weather Strength", L"weather_amount", g_cfg_weather_amount, 0, 100, 5),
-	SLIDER("Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
-	SLIDER("Haze", L"fog", g_cfg_fog, 0, 300, 5),
-	SLIDER("Dirt Depth", L"parallax", g_cfg_parallax, 0, 200, 5),
-	SLIDER("Motion Blur", L"motion_blur", g_cfg_motion_blur, 0, 200, 5),
-	SLIDER("Depth of Field", L"dof", g_cfg_dof, 0, 200, 5),
-	SLIDER("Saturation", L"saturation", g_cfg_saturation, 0, 200, 5),
-	SLIDER("Contrast", L"contrast", g_cfg_contrast, 0, 100, 5),
-	SLIDER("Split Toning", L"split_tone", g_cfg_split_tone, 0, 100, 5),
-	SLIDER("Sharpen", L"sharpen", g_cfg_sharpen, 0, 200, 5),
-	SLIDER("Texture Sharpness", L"texture_sharpness", g_cfg_texture_sharpness, 0, 100, 5),
-	SLIDER("Lens Flare", L"lens_flare", g_cfg_lens_flare, 0, 200, 5),
-	SLIDER("Sun Disc", L"sun_disc", g_cfg_sun_disc, 0, 200, 5),
-	SLIDER("Sun Height (0 Track)", L"sun_height", g_cfg_sun_height, 0, 90, 1),
-	SLIDER("Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
-	SLIDER("Shadow Distance", L"shadow_range", g_cfg_shadow_range, 20, 500, 10),
-	{ "Goggles in First Person", L"goggles", UI_TOGGLE, &g_cfg_goggles, 0, 0, 0, NULL, 0, FALSE },
-	{ "Hide Game HUD", L"hide_hud", UI_TOGGLE, &g_cfg_hide_hud, 0, 0, 0, NULL, 0, FALSE },
-	{ "Hide Cursor in Race", L"hide_cursor", UI_TOGGLE, &g_cfg_hide_cursor, 0, 0, 0, NULL, 0, FALSE },
-	CHOICE("Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes),
-	CHOICE("Antialiasing", L"msaa", g_cfg_msaa, g_msaa_levels),
-	CHOICE("Texture Filtering", L"anisotropy", g_cfg_aniso, g_aniso_levels),
-	{ "Borderless Window", L"borderless", UI_TOGGLE, &g_cfg_borderless, 0, 0, 0, NULL, 0, TRUE },
+	SLIDER(UI_TAB_LOOK, "Haze", L"fog", g_cfg_fog, 0, 300, 5),
+	SLIDER(UI_TAB_LOOK, "Dirt Depth", L"parallax", g_cfg_parallax, 0, 200, 5),
+	SLIDER(UI_TAB_LOOK, "Motion Blur", L"motion_blur", g_cfg_motion_blur, 0, 200, 5),
+	SLIDER(UI_TAB_LOOK, "Depth of Field", L"dof", g_cfg_dof, 0, 200, 5),
+	SLIDER(UI_TAB_LOOK, "Saturation", L"saturation", g_cfg_saturation, 0, 200, 5),
+	SLIDER(UI_TAB_LOOK, "Contrast", L"contrast", g_cfg_contrast, 0, 100, 5),
+	SLIDER(UI_TAB_LOOK, "Split Toning", L"split_tone", g_cfg_split_tone, 0, 100, 5),
+	SLIDER(UI_TAB_LOOK, "Sharpen", L"sharpen", g_cfg_sharpen, 0, 200, 5),
+	SLIDER(UI_TAB_LOOK, "Texture Sharpness", L"texture_sharpness", g_cfg_texture_sharpness, 0, 100, 5),
+	SLIDER(UI_TAB_LOOK, "Lens Flare", L"lens_flare", g_cfg_lens_flare, 0, 200, 5),
+	TOGGLE(UI_TAB_LOOK, "Goggles in First Person", L"goggles", g_cfg_goggles, FALSE),
+
+	SLIDER(UI_TAB_WEATHER, "Day to Night", L"time_of_day", g_cfg_time_of_day, 0, 100, 5),
+	NAMED_CHOICE(UI_TAB_WEATHER, "Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names),
+	SLIDER(UI_TAB_WEATHER, "Weather Strength", L"weather_amount", g_cfg_weather_amount, 0, 100, 5),
+	SLIDER(UI_TAB_WEATHER, "Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
+	SLIDER(UI_TAB_WEATHER, "Sun Disc", L"sun_disc", g_cfg_sun_disc, 0, 200, 5),
+	SLIDER(UI_TAB_WEATHER, "Sun Height (0 Track)", L"sun_height", g_cfg_sun_height, 0, 90, 1),
+	SLIDER(UI_TAB_WEATHER, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
+	SLIDER(UI_TAB_WEATHER, "Shadow Distance", L"shadow_range", g_cfg_shadow_range, 20, 500, 10),
+
+	TOGGLE(UI_TAB_DISPLAY, "Hide Game HUD", L"hide_hud", g_cfg_hide_hud, FALSE),
+	TOGGLE(UI_TAB_DISPLAY, "Hide Cursor in Race", L"hide_cursor", g_cfg_hide_cursor, FALSE),
+	CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes),
+	CHOICE(UI_TAB_DISPLAY, "Antialiasing", L"msaa", g_cfg_msaa, g_msaa_levels),
+	CHOICE(UI_TAB_DISPLAY, "Texture Filtering", L"anisotropy", g_cfg_aniso, g_aniso_levels),
+	TOGGLE(UI_TAB_DISPLAY, "Borderless Window", L"borderless", g_cfg_borderless, TRUE),
 };
 
 /* Sliders belong to the pack. The default pack's stay in the main section, where they always were. */
