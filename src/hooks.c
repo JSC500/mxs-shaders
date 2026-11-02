@@ -238,7 +238,7 @@ static BOOL g_cursor_hidden;
 static BOOL g_reload_requested, g_enabled_changed;	/* from the panel, done at the frame boundary */
 static int g_cfg_fog, g_cfg_parallax, g_cfg_motion_blur, g_cfg_dof, g_cfg_saturation, g_cfg_contrast, g_cfg_split_tone;
 static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_time_of_day, g_cfg_ui_key, g_cfg_enabled;
-static int g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_sun_disc, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_height, g_cfg_sun_turn;
+static int g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_bloom, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_height, g_cfg_sun_turn;
 static int g_cfg_weather, g_cfg_weather_amount, g_cfg_wet;
 static float g_weather_time;	/* seconds since the first frame, for drifting clouds and falling rain */
 
@@ -2097,7 +2097,7 @@ static void run_post(void)
 	s.contrast = g_cfg_contrast / 100.0f;
 	s.split_tone = g_cfg_split_tone / 100.0f;
 	s.sharpen = g_cfg_sharpen / 100.0f;
-	s.sun_disc = g_cfg_sun_disc / 100.0f;
+	s.bloom = g_cfg_bloom / 100.0f;
 	s.lens_flare = g_cfg_lens_flare / 100.0f;
 	s.goggles = g_cfg_goggles && g_frame_trimmed;
 	s.sun_moved = sun_moved() ? 1.0f : 0.0f;
@@ -2201,6 +2201,7 @@ static void present(HDC dc)
 /* --- the settings panel --- */
 
 static const int g_shadow_sizes[] = { 1024, 2048, 4096, 8192 };
+static const char *const g_shadow_names[] = { "Low", "Medium", "High", "Ultra" };
 static const int g_msaa_levels[] = { 0, 2, 4, 8 };
 static const int g_aniso_levels[] = { 1, 2, 4, 8, 16 };
 static const int g_weather_kinds[] = { WEATHER_CLEAR, WEATHER_CLOUDY, WEATHER_RAIN, WEATHER_STORM, WEATHER_SNOW };
@@ -2208,7 +2209,7 @@ static const char *const g_weather_names[] = { "Clear", "Cloudy", "Rain", "Storm
 
 #define SLIDER(tab, label, key, var, lo, hi, step) { label, key, UI_SLIDER, &var, lo, hi, step, NULL, 0, FALSE, NULL, tab }
 #define CHOICE(tab, label, key, var, list) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], TRUE, NULL, tab }
-#define NAMED_CHOICE(tab, label, key, var, list, names) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], FALSE, names, tab }
+#define NAMED_CHOICE(tab, label, key, var, list, names, restart) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], restart, names, tab }
 #define TOGGLE(tab, label, key, var, restart) { label, key, UI_TOGGLE, &var, 0, 0, 0, NULL, 0, restart, NULL, tab }
 
 static const ui_item g_ui_items[] = {
@@ -2221,21 +2222,21 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_LOOK, "Split Toning", L"split_tone", g_cfg_split_tone, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Sharpen", L"sharpen", g_cfg_sharpen, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Texture Sharpness", L"texture_sharpness", g_cfg_texture_sharpness, 0, 100, 5),
+	SLIDER(UI_TAB_LOOK, "Bloom", L"bloom", g_cfg_bloom, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Lens Flare", L"lens_flare", g_cfg_lens_flare, 0, 200, 5),
 	TOGGLE(UI_TAB_LOOK, "Goggles in First Person", L"goggles", g_cfg_goggles, FALSE),
 
 	SLIDER(UI_TAB_WEATHER, "Day to Night", L"time_of_day", g_cfg_time_of_day, 0, 100, 5),
-	NAMED_CHOICE(UI_TAB_WEATHER, "Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names),
+	NAMED_CHOICE(UI_TAB_WEATHER, "Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names, FALSE),
 	SLIDER(UI_TAB_WEATHER, "Weather Strength", L"weather_amount", g_cfg_weather_amount, 0, 100, 5),
 	SLIDER(UI_TAB_WEATHER, "Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
-	SLIDER(UI_TAB_WEATHER, "Sun Disc", L"sun_disc", g_cfg_sun_disc, 0, 200, 5),
 	SLIDER(UI_TAB_WEATHER, "Sun Height (0 Track)", L"sun_height", g_cfg_sun_height, 0, 90, 1),
 	SLIDER(UI_TAB_WEATHER, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
 	SLIDER(UI_TAB_WEATHER, "Shadow Distance", L"shadow_range", g_cfg_shadow_range, 20, 500, 10),
 
 	TOGGLE(UI_TAB_DISPLAY, "Hide Game HUD", L"hide_hud", g_cfg_hide_hud, FALSE),
 	TOGGLE(UI_TAB_DISPLAY, "Hide Cursor in Race", L"hide_cursor", g_cfg_hide_cursor, FALSE),
-	CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes),
+	NAMED_CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes, g_shadow_names, TRUE),
 	CHOICE(UI_TAB_DISPLAY, "Antialiasing", L"msaa", g_cfg_msaa, g_msaa_levels),
 	CHOICE(UI_TAB_DISPLAY, "Texture Filtering", L"anisotropy", g_cfg_aniso, g_aniso_levels),
 	TOGGLE(UI_TAB_DISPLAY, "Borderless Window", L"borderless", g_cfg_borderless, TRUE),
@@ -3138,8 +3139,8 @@ static void load_live_settings(void)
 	g_cfg_split_tone = pack_int(L"split_tone", 20);
 	g_cfg_sharpen = pack_int(L"sharpen", 30);
 	g_cfg_texture_sharpness = pack_int(L"texture_sharpness", 0);
+	g_cfg_bloom = pack_int(L"bloom", 100);
 	g_cfg_lens_flare = pack_int(L"lens_flare", 50);
-	g_cfg_sun_disc = pack_int(L"sun_disc", 0);
 	g_cfg_sun_height = pack_int(L"sun_height", 0);
 	g_cfg_sun_turn = pack_int(L"sun_turn", 0);
 	g_cfg_goggles = ini_int(L"goggles", 0);

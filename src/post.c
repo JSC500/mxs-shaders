@@ -160,7 +160,7 @@ static GLint g_exposure_a, g_exposure_b, g_exposure_fx, g_exposure_fy, g_exposur
 static GLuint g_prog_shafts;
 static GLint g_shafts_a, g_shafts_b, g_shafts_fx, g_shafts_fy, g_shafts_matrix, g_shafts_on;
 static GLint g_final_a, g_final_b, g_final_fx, g_final_fy, g_final_height, g_final_up, g_final_sun, g_final_fog, g_final_amount, g_final_night;
-static GLint g_final_sharpen, g_final_sun_disc;
+static GLint g_final_sharpen, g_final_bloom;
 
 /* The weather uniforms common.glsl declares, in the post programs that use them. */
 typedef struct {
@@ -399,7 +399,7 @@ static BOOL load_programs(void)
 	g_final_amount = gl_GetUniformLocation(g_prog_final, "u_fog_amount");
 	g_final_night = gl_GetUniformLocation(g_prog_final, "u_night");
 	g_final_sharpen = gl_GetUniformLocation(g_prog_final, "u_sharpen");
-	g_final_sun_disc = gl_GetUniformLocation(g_prog_final, "u_sun_disc");
+	g_final_bloom = gl_GetUniformLocation(g_prog_final, "u_bloom_amount");
 	weather_find(&g_final_weather, g_prog_final);
 
 	g_ao_texel = gl_GetUniformLocation(g_prog_ao, "u_texel");
@@ -670,7 +670,8 @@ void post_run(const post_state *s)
 
 	pass_ao(s);
 	pass_shafts(s);
-	pass_bloom();
+	if (s->bloom > 0.0f)
+		pass_bloom();
 	pass_exposure(s);
 
 	bind_unit(UNIT_AO, g_tex_ao[0]);
@@ -690,7 +691,7 @@ void post_run(const post_state *s)
 	gl_Uniform3f(g_final_sun, s->sun_view[0], s->sun_view[1], s->sun_view[2]);
 	gl_Uniform3f(g_final_fog, s->fog_color[0], s->fog_color[1], s->fog_color[2]);
 	gl_Uniform1f(g_final_sharpen, s->sharpen);
-	gl_Uniform1f(g_final_sun_disc, s->sun_disc);
+	gl_Uniform1f(g_final_bloom, s->bloom);
 	weather_send(&g_final_weather, s);
 	fullscreen();
 
