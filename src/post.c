@@ -63,6 +63,7 @@
 #define UNIT_SRC 14
 #define UNIT_EXPOSURE 15
 #define UNIT_SHAFTS 16
+#define UNIT_WEATHER_NOISE 18	/* hooks.c keeps the weather noise bound there */
 
 typedef void (WINAPI *cap_fn)(GLenum);
 typedef GLboolean (WINAPI *isenabled_fn)(GLenum);
@@ -154,10 +155,19 @@ static GLuint g_tex_shafts[2], g_fbo_shafts[2];
 static GLuint g_tex_comp, g_fbo_comp;	/* the finished scene, still linear */
 static GLuint g_prog_lens;
 static GLint g_lens_a, g_lens_b, g_lens_fx, g_lens_fy, g_lens_texel, g_lens_reproject, g_lens_motion, g_lens_near, g_lens_dof, g_lens_saturation, g_lens_contrast, g_lens_split_tone, g_lens_night;
-static GLint g_exposure_a, g_exposure_b;
+static GLint g_lens_flare, g_lens_sun, g_lens_up, g_lens_goggles, g_lens_sun_moved;
+static GLint g_exposure_a, g_exposure_b, g_exposure_fx, g_exposure_fy, g_exposure_sun;
 static GLuint g_prog_shafts;
 static GLint g_shafts_a, g_shafts_b, g_shafts_fx, g_shafts_fy, g_shafts_matrix, g_shafts_on;
 static GLint g_final_a, g_final_b, g_final_fx, g_final_fy, g_final_height, g_final_up, g_final_sun, g_final_fog, g_final_amount, g_final_night;
+static GLint g_final_sharpen, g_final_sun_disc;
+
+/* The weather uniforms common.glsl declares, in the post programs that use them. */
+typedef struct {
+	GLint world, time, weather, amount, wet;
+} weather_locs;
+
+static weather_locs g_final_weather, g_lens_weather;
 
 static const char *const g_vs =
 	"#version 150\n"
@@ -226,10 +236,29 @@ static GLuint program(const char *file)
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_exposure"), UNIT_EXPOSURE);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_shafts"), UNIT_SHAFTS);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_shadow_map"), SHADOW_UNIT);
+	gl_Uniform1i(gl_GetUniformLocation(p, "u_weather_noise"), UNIT_WEATHER_NOISE);
 	return p;
 }
 
 static BOOL load_programs(void);
+
+static void weather_find(weather_locs *w, GLuint p)
+{
+	w->world = gl_GetUniformLocation(p, "u_world_from_view");
+	w->time = gl_GetUniformLocation(p, "u_time");
+	w->weather = gl_GetUniformLocation(p, "u_weather");
+	w->amount = gl_GetUniformLocation(p, "u_weather_amount");
+	w->wet = gl_GetUniformLocation(p, "u_wet");
+}
+
+static void weather_send(const weather_locs *w, const post_state *s)
+{
+	gl_UniformMatrix4fv(w->world, 1, 0, s->world_from_view);
+	gl_Uniform1f(w->time, s->time);
+	gl_Uniform1i(w->weather, s->weather);
+	gl_Uniform1f(w->amount, s->weather_amount);
+	gl_Uniform1f(w->wet, s->wet);
+}
 
 #define LOAD(var, name) *(PROC *)&var = get_proc(name)
 #define LOAD_GL11(var, name) *(FARPROC *)&var = GetProcAddress(g_real_gl, name)
@@ -334,6 +363,12 @@ static BOOL load_programs(void)
 	g_lens_contrast = gl_GetUniformLocation(g_prog_lens, "u_contrast");
 	g_lens_split_tone = gl_GetUniformLocation(g_prog_lens, "u_split_tone");
 	g_lens_night = gl_GetUniformLocation(g_prog_lens, "u_night");
+	g_lens_flare = gl_GetUniformLocation(g_prog_lens, "u_flare");
+	g_lens_sun = gl_GetUniformLocation(g_prog_lens, "u_sun");
+	g_lens_up = gl_GetUniformLocation(g_prog_lens, "u_up");
+	g_lens_goggles = gl_GetUniformLocation(g_prog_lens, "u_goggles");
+	g_lens_sun_moved = gl_GetUniformLocation(g_prog_lens, "u_sun_moved");
+	weather_find(&g_lens_weather, g_prog_lens);
 	g_prog_shafts = fresh[6];
 	g_shafts_a = gl_GetUniformLocation(g_prog_shafts, "u_proj_a");
 	g_shafts_b = gl_GetUniformLocation(g_prog_shafts, "u_proj_b");
@@ -345,6 +380,9 @@ static BOOL load_programs(void)
 	g_exposure_first_loc = gl_GetUniformLocation(g_prog_exposure, "u_first");
 	g_exposure_a = gl_GetUniformLocation(g_prog_exposure, "u_proj_a");
 	g_exposure_b = gl_GetUniformLocation(g_prog_exposure, "u_proj_b");
+	g_exposure_fx = gl_GetUniformLocation(g_prog_exposure, "u_fx");
+	g_exposure_fy = gl_GetUniformLocation(g_prog_exposure, "u_fy");
+	g_exposure_sun = gl_GetUniformLocation(g_prog_exposure, "u_sun");
 	g_prog_ao = fresh[0];
 	g_prog_blur = fresh[1];
 	g_prog_down = fresh[2];
@@ -360,6 +398,9 @@ static BOOL load_programs(void)
 	g_final_fog = gl_GetUniformLocation(g_prog_final, "u_fog_color");
 	g_final_amount = gl_GetUniformLocation(g_prog_final, "u_fog_amount");
 	g_final_night = gl_GetUniformLocation(g_prog_final, "u_night");
+	g_final_sharpen = gl_GetUniformLocation(g_prog_final, "u_sharpen");
+	g_final_sun_disc = gl_GetUniformLocation(g_prog_final, "u_sun_disc");
+	weather_find(&g_final_weather, g_prog_final);
 
 	g_ao_texel = gl_GetUniformLocation(g_prog_ao, "u_texel");
 	g_ao_a = gl_GetUniformLocation(g_prog_ao, "u_proj_a");
@@ -462,7 +503,7 @@ static BOOL create_targets(int w, int h)
 		g_fbo_bloom[i] = new_fbo(g_tex_bloom[i]);
 	}
 	for (i = 0; i < 2; i++) {
-		g_tex_exposure[i] = new_texture(GL_RG16F, GL_RG, GL_FLOAT, 1, 1, GL_NEAREST);
+		g_tex_exposure[i] = new_texture(GL_RGBA16F, GL_RGBA, GL_FLOAT, 1, 1, GL_NEAREST);
 		g_fbo_exposure[i] = new_fbo(g_tex_exposure[i]);
 	}
 	g_tex_comp = new_texture(GL_RGBA16F, GL_RGBA, GL_FLOAT, w, h, GL_LINEAR);
@@ -585,6 +626,9 @@ static void pass_exposure(const post_state *s)
 	gl_Uniform1i(g_exposure_first_loc, g_exposure_first);
 	gl_Uniform1f(g_exposure_a, s->projection[10]);
 	gl_Uniform1f(g_exposure_b, s->projection[14]);
+	gl_Uniform1f(g_exposure_fx, s->projection[0]);
+	gl_Uniform1f(g_exposure_fy, s->projection[5]);
+	gl_Uniform3f(g_exposure_sun, s->sun_view[0], s->sun_view[1], s->sun_view[2]);
 	bind_unit(UNIT_SRC, g_tex_exposure[read]);
 	fullscreen();
 	bind_unit(UNIT_EXPOSURE, g_tex_exposure[g_exposure_write]);
@@ -645,6 +689,9 @@ void post_run(const post_state *s)
 	gl_Uniform3f(g_final_up, s->view_up[0], s->view_up[1], s->view_up[2]);
 	gl_Uniform3f(g_final_sun, s->sun_view[0], s->sun_view[1], s->sun_view[2]);
 	gl_Uniform3f(g_final_fog, s->fog_color[0], s->fog_color[1], s->fog_color[2]);
+	gl_Uniform1f(g_final_sharpen, s->sharpen);
+	gl_Uniform1f(g_final_sun_disc, s->sun_disc);
+	weather_send(&g_final_weather, s);
 	fullscreen();
 
 	gl_BindFramebuffer(GL_FRAMEBUFFER, s->scene_fbo);
@@ -663,6 +710,12 @@ void post_run(const post_state *s)
 	gl_Uniform1f(g_lens_contrast, s->contrast);
 	gl_Uniform1f(g_lens_split_tone, s->split_tone);
 	gl_Uniform1f(g_lens_night, s->night);
+	gl_Uniform1f(g_lens_flare, s->lens_flare);
+	gl_Uniform3f(g_lens_sun, s->sun_view[0], s->sun_view[1], s->sun_view[2]);
+	gl_Uniform3f(g_lens_up, s->view_up[0], s->view_up[1], s->view_up[2]);
+	gl_Uniform1i(g_lens_goggles, s->goggles);
+	gl_Uniform1f(g_lens_sun_moved, s->sun_moved);
+	weather_send(&g_lens_weather, s);
 	fullscreen();
 
 restore:

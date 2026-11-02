@@ -185,3 +185,134 @@ vec3 apply_fog(vec3 c, vec3 fog_color, float density)
 
 	return mix(fog_color, c, min(exp(-density * z), 1.0));
 }
+
+/*
+ Weather. u_world_from_view takes view space to the world, where y is up, so
+ clouds, puddles and snow stay put on the track as the camera moves.
+*/
+uniform mat4 u_world_from_view;
+uniform float u_time;		/* seconds, for drifting clouds and falling rain */
+uniform int u_weather;
+uniform float u_weather_amount;	/* the Weather Strength setting, 1 at 100 */
+uniform float u_wet;		/* 0 dry to 1 soaked, from Wet Ground or the rain */
+uniform sampler2D u_weather_noise;	/* four octaves of tiling value noise, made by the mod */
+
+const int WEATHER_CLEAR = 0, WEATHER_CLOUDY = 1, WEATHER_RAIN = 2, WEATHER_STORM = 3, WEATHER_SNOW = 4;
+const vec2 WIND = vec2(9.0, 4.0);	/* game units per second */
+const float CLOUD_HEIGHT = 1200.0;
+const float CLOUD_SIZE = 900.0;		/* across a typical cloud */
+const float CLOUD_OPACITY = 0.85;	/* of the sun a thick cloud takes away */
+const float PUDDLE_SIZE = 18.0;
+const float SNOW_PATCH_SIZE = 40.0;
+const vec3 SNOW_ALBEDO = vec3(0.8, 0.83, 0.88);
+const float NOISE_CELLS = 8.0;	/* the noise texture's lowest octave cells across, match WEATHER_NOISE_CELLS */
+
+float weather_hash(vec2 p)
+{
+	vec3 q = fract(p.xyx * vec3(0.1031, 0.1030, 0.0973));
+
+	q += dot(q, q.yzx + 33.33);
+	return fract((q.x + q.y) * q.z);
+}
+
+float weather_noise(vec2 p)
+{
+	vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+
+	return mix(mix(weather_hash(i), weather_hash(i + vec2(1.0, 0.0)), u.x),
+		   mix(weather_hash(i + vec2(0.0, 1.0)), weather_hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+
+/* Four octaves from 0 to 1, p in lowest octave cells. One read, the mod built the sum once. */
+float weather_fbm(vec2 p)
+{
+	return texture(u_weather_noise, p / NOISE_CELLS).r;
+}
+
+vec3 to_world(vec3 view_pos)
+{
+	return (u_world_from_view * vec4(view_pos, 1.0)).xyz;
+}
+
+vec3 to_world_dir(vec3 view_dir)
+{
+	return mat3(u_world_from_view) * view_dir;
+}
+
+/* How much of the sky the clouds cover. */
+float cloud_cover()
+{
+	if (u_weather == WEATHER_CLEAR)
+		return 0.0;
+	if (u_weather == WEATHER_CLOUDY)
+		return 0.25 + 0.45 * u_weather_amount;
+	return 0.75 + 0.25 * u_weather_amount;
+}
+
+/* How thick the cloud is at a point of its layer, 0 in clear sky. */
+float cloud_density(vec2 layer)
+{
+	float cover = cloud_cover();
+
+	if (cover <= 0.0)
+		return 0.0;
+	return smoothstep(1.0 - cover, 1.0 - cover + 0.25, weather_fbm((layer + WIND * u_time) / CLOUD_SIZE));
+}
+
+/* The sun's world direction, pointing up whichever way the game's vector runs. */
+vec3 sun_world(vec3 view_sun)
+{
+	vec3 sun = normalize(to_world_dir(view_sun));
+
+	return sun.y < 0.0 ? -sun : sun;
+}
+
+/* The sunlight a point gets through the clouds between it and the sun. */
+float cloud_shadow(vec3 view_pos, vec3 view_sun)
+{
+	vec3 p, sun;
+
+	if (u_weather == WEATHER_CLEAR)
+		return 1.0;
+	p = to_world(view_pos);
+	sun = sun_world(view_sun);
+	return 1.0 - cloud_density(p.xz + sun.xz / max(sun.y, 0.1) * (CLOUD_HEIGHT - p.y)) * CLOUD_OPACITY;
+}
+
+/* The same for the sun itself, seen from the camera. */
+float sun_through_clouds(vec3 view_sun)
+{
+	return cloud_shadow(vec3(0.0), view_sun);
+}
+
+/* How grey and dull the day is, 0 under a clear or broken sky. */
+float weather_gloom()
+{
+	return u_weather >= WEATHER_RAIN ? 0.5 + 0.5 * u_weather_amount : 0.0;
+}
+
+/* Water on flat ground, in patches fixed to the track. flatness is the ground normal's height. */
+float puddle(vec3 world, float flatness)
+{
+	float level = 0.78 - 0.28 * u_wet;
+
+	if (u_wet <= 0.0)
+		return 0.0;
+	return smoothstep(0.9, 0.97, flatness) * smoothstep(level, level + 0.04, weather_fbm(world.xz / PUDDLE_SIZE));
+}
+
+/* Snow lying on whatever faces up, from patches to full cover as the strength rises. */
+float snow_cover(vec3 world, float facing)
+{
+	float level = 0.85 - 0.8 * u_weather_amount;
+
+	if (u_weather != WEATHER_SNOW)
+		return 0.0;
+	return smoothstep(0.3, 0.7, facing) * smoothstep(level - 0.1, level + 0.1, weather_fbm(world.xz / SNOW_PATCH_SIZE));
+}
+
+/* The sky a puddle mirrors, close to the horizon's colour. */
+vec3 sky_reflection(vec3 fog_color)
+{
+	return u_hdr != 0 ? scene_from_gamma(fog_color) : to_linear(fog_color);
+}

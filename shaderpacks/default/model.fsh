@@ -70,7 +70,12 @@ void main()
 	sky = sky_light(u_ambient.rgb);
 	ambient = mix(sky * GROUND_BOUNCE, sky, hemi);
 
+	/* Snow settles on tops: roofs, fenders, helmets. Glass and water stay clear. */
+	if (alpha >= SOLID_ALPHA)
+		albedo = mix(albedo, SNOW_ALBEDO, snow_cover(to_world(interp_viewer), dot(n, up)));
+
 	shade = sun_shadow(interp_viewer, n, u_nbones != 0 || alpha < SOLID_ALPHA ? SKINNED_SELF_SHADOW_IGNORE : 0.0);
+	shade *= cloud_shadow(interp_viewer, light);
 	ndl = max(dot(n, light), 0.0) * shade;
 
 	/* A rider in shade gets no bounce from sunlit ground, keep them in step with it. */

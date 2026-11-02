@@ -3,6 +3,7 @@
 /* The in-game settings panel, styled after the game's own menus. */
 
 enum { UI_SLIDER, UI_CHOICE, UI_TOGGLE };
+enum { UI_TAB_LOOK, UI_TAB_WEATHER, UI_TAB_DISPLAY, UI_TABS };
 
 typedef struct {
 	const char *label;
@@ -13,6 +14,8 @@ typedef struct {
 	const int *choices;
 	int choice_count;
 	BOOL restart;		/* only takes effect on the next start */
+	const char *const *names;	/* choices shown by name, else as numbers */
+	int tab;		/* which page of the panel it's on */
 } ui_item;
 
 /* The GL state to leave behind, none of it goes through the hooks. */

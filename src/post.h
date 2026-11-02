@@ -19,6 +19,13 @@ typedef struct {
 	float camera_height;		/* above the ground around the rider */
 	float fog_amount;		/* the fog setting, 1 is the pack's default */
 	float dof, saturation, contrast, split_tone;	/* the same for these */
+	float sharpen, sun_disc, lens_flare;
+	int goggles;			/* the setting is on and the camera is first person */
+	float sun_moved;		/* 1 when the player moved the sun */
+	const float *world_from_view;	/* this frame's camera, for weather fixed to the track */
+	float time;			/* seconds, for weather that moves */
+	int weather;			/* as common.glsl's WEATHER_ constants */
+	float weather_amount, wet;
 	float night;			/* the time of day setting, 1 has nothing from the sun */
 	float motion;			/* blur per frame of movement */
 	float blur_near;		/* what's closer moves with the camera */

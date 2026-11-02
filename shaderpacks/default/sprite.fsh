@@ -43,7 +43,7 @@ void main()
 		*/
 		float d = max(dot(view_ray(), normalize(u_sun_view)), 0.0);
 
-		color.rgb += SUN_GLOW * (0.1 * pow(d, 6.0) + 0.1 * pow(d, 32.0)) * (1.0 - u_night);
+		color.rgb += SUN_GLOW * (0.1 * pow(d, 6.0) + 0.1 * pow(d, 32.0)) * (1.0 - u_night) * sun_through_clouds(u_sun_view);
 		if (u_hdr != 0)
 			color.rgb = scene_from_gamma(color.rgb);
 	} else if (u_sprite_mode == 2) {
@@ -52,7 +52,7 @@ void main()
 		vec2 ndc = gl_FragCoord.xy / u_screen.xy * 2.0 - 1.0;
 		vec3 pos = vec3(-ndc.x * z / u_projection[0][0], -ndc.y * z / u_projection[1][1], z);
 
-		color.rgb *= mix(PARTICLE_SHADE, 1.0, sun_shadow_fast(pos));
+		color.rgb *= mix(PARTICLE_SHADE, 1.0, sun_shadow_fast(pos) * cloud_shadow(pos, u_sun_view));
 	}
 
 	f_fragcolor = color;

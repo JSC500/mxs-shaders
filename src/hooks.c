@@ -25,6 +25,7 @@
 #define GL_NEAREST_MIPMAP_NEAREST 0x2700
 #define GL_LINEAR_MIPMAP_LINEAR 0x2703
 #define GL_TEXTURE_MAX_ANISOTROPY 0x84FE
+#define GL_TEXTURE_LOD_BIAS 0x8501
 #define GL_MAX_TEXTURE_MAX_ANISOTROPY 0x84FF
 #define GL_MAX_SAMPLES 0x8D57
 #define GL_SCISSOR_TEST 0x0C11
@@ -177,6 +178,8 @@ static BOOL g_rec_overflow;
 static int g_prog_role[MAX_IDS];
 static GLint g_loc_proj[MAX_IDS], g_loc_mv[MAX_IDS], g_loc_light[MAX_IDS];
 static GLint g_loc_shadow_matrix[MAX_IDS], g_loc_shadow_map[MAX_IDS], g_loc_shadow_on[MAX_IDS], g_loc_night[MAX_IDS];
+static GLint g_loc_world_from_view[MAX_IDS], g_loc_time[MAX_IDS], g_loc_weather[MAX_IDS], g_loc_weather_amount[MAX_IDS], g_loc_wet[MAX_IDS];
+static GLint g_loc_weather_noise[MAX_IDS];
 static GLint g_loc_shadow_pass[MAX_IDS], g_loc_view_up[MAX_IDS];
 static GLint g_loc_shadow_near_matrix[MAX_IDS], g_loc_shadow_near_map[MAX_IDS], g_loc_nbones[MAX_IDS];
 static GLint g_cur_nbones;
@@ -194,7 +197,8 @@ static GLenum g_blend_src = 1, g_blend_dst;
 static float g_proj_value[MAX_IDS][16];
 static GLuint g_terrain_prog, g_model_prog;
 
-static float g_light_view[3];
+static float g_light_view[3];	/* the sun everything uses, after the player's changes */
+static float g_light_game[3];	/* as the game sent it */
 static BOOL g_have_light;
 static float g_light_matrix[SHADOW_CASCADES][16];	/* world to shadow map */
 static float g_shadow_from_view[SHADOW_CASCADES][16];
@@ -221,7 +225,7 @@ static GLuint g_bound_tex;
 /* --- settings and redirected framebuffer --- */
 
 static int g_cfg_gl_major, g_cfg_gl_minor, g_cfg_msaa, g_cfg_aniso, g_cfg_gl_debug, g_cfg_debug;
-static float g_aniso, g_aniso_setting;
+static float g_aniso, g_aniso_setting, g_lod_bias;
 static unsigned g_aniso_count;
 static HGLRC g_main_rc;
 static GLuint g_fbo, g_fbo_color, g_fbo_depth, g_present_fbo, g_present_color;
@@ -234,6 +238,9 @@ static BOOL g_cursor_hidden;
 static BOOL g_reload_requested, g_enabled_changed;	/* from the panel, done at the frame boundary */
 static int g_cfg_fog, g_cfg_parallax, g_cfg_motion_blur, g_cfg_dof, g_cfg_saturation, g_cfg_contrast, g_cfg_split_tone;
 static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_time_of_day, g_cfg_ui_key, g_cfg_enabled;
+static int g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_sun_disc, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_height, g_cfg_sun_turn;
+static int g_cfg_weather, g_cfg_weather_amount, g_cfg_wet;
+static float g_weather_time;	/* seconds since the first frame, for drifting clouds and falling rain */
 
 typedef void (WINAPI *glGenObjects_t)(GLsizei, GLuint *);
 typedef void (WINAPI *glDeleteObjects_t)(GLsizei, const GLuint *);
@@ -454,6 +461,8 @@ static void WINAPI gl_debug_message(GLenum source, GLenum type, GLuint id, GLenu
 static void bind_current_fb(void);
 static void hot_reload(void);
 static void enabled_apply(void);
+static void texture_filter_apply(void);
+static float lod_bias_wanted(void);
 static void program_refresh(GLuint program);
 static void sprite_set_mode(int mode);
 static void hdr_set(int on);
@@ -560,6 +569,8 @@ static void frame_boundary(const char *source)
 	if (g_enabled_changed)
 		enabled_apply();
 	g_enabled_changed = FALSE;
+	if (g_lod_bias != lod_bias_wanted())
+		texture_filter_apply();
 
 	if (g_reload_requested)
 		hot_reload();
@@ -662,6 +673,51 @@ static BOOL v_normalize(float *v)
 	return TRUE;
 }
 
+#define SUN_MIN_HEIGHT 8	/* degrees, lower and the shadows would cover the map */
+#define RADIANS (3.14159265f / 180.0f)
+
+static BOOL sun_moved(void)
+{
+	return g_cfg_enabled && (g_cfg_sun_height > 0 || g_cfg_sun_turn % 360 != 0);
+}
+
+/*
+ The game's sun in view space, turned and raised by the Sun Turn and Sun Height
+ settings. They act on its world direction, so the camera turning doesn't move it.
+*/
+static void sun_effective(float *out, const float *in, const float *inv_view)
+{
+	float w[3], len = (float)sqrt(v_dot(in, in)), turn = g_cfg_sun_turn * RADIANS;
+	float x, flat, height, side;
+	int i;
+
+	if (!sun_moved() || len < 1e-6f) {
+		memcpy(out, in, 3 * sizeof *out);
+		return;
+	}
+	for (i = 0; i < 3; i++)
+		w[i] = inv_view[0 + i] * in[0] + inv_view[4 + i] * in[1] + inv_view[8 + i] * in[2];
+	x = w[0] * (float)cos(turn) - w[2] * (float)sin(turn);
+	w[2] = w[0] * (float)sin(turn) + w[2] * (float)cos(turn);
+	w[0] = x;
+	if (g_cfg_sun_height > 0) {
+		/* Whether the game's vector runs toward the sun or away, it stays on that side. */
+		height = max(g_cfg_sun_height, SUN_MIN_HEIGHT) * RADIANS;
+		side = w[1] < 0.0f ? -1.0f : 1.0f;
+		flat = (float)sqrt(w[0] * w[0] + w[2] * w[2]);
+		if (flat < 1e-4f) {
+			w[0] = flat = 1.0f;
+			w[2] = 0.0f;
+		}
+		w[0] *= (float)cos(height) * len / flat;
+		w[2] *= (float)cos(height) * len / flat;
+		w[1] = side * (float)sin(height) * len;
+	}
+	/* Back to view space with the transposed rotation. */
+	for (i = 0; i < 3; i++)
+		out[i] = inv_view[i * 4 + 0] * w[0] + inv_view[i * 4 + 1] * w[1] + inv_view[i * 4 + 2] * w[2];
+}
+
 /* Orthographic sun view around the area in front of the camera. */
 static BOOL build_light_matrix(float *m, const float *inv_view, float range, int size)
 {
@@ -697,6 +753,85 @@ static BOOL build_light_matrix(float *m, const float *inv_view, float range, int
 	return TRUE;
 }
 
+#define GL_R8 0x8229
+#define GL_RED 0x1903
+#define GL_REPEAT 0x2901
+#define GL_TEXTURE_MAX_LEVEL 0x813D
+
+/*
+ Tiling noise for the weather, so a cloud, puddle or snow lookup is one texture
+ read instead of sixteen hashes in every pixel. Its unit is above the post passes'
+ 10-16 and the panel's font at 17.
+*/
+#define WEATHER_NOISE_UNIT 18
+#define WEATHER_NOISE_SIZE 256
+#define WEATHER_NOISE_CELLS 8	/* lowest octave's cells across, match NOISE_CELLS in common.glsl */
+#define WEATHER_NOISE_LEVELS 7	/* down to 4x4, below that rows would need unpack padding */
+
+static GLuint g_weather_noise;
+
+static float noise_corner(int x, int y, int cells, unsigned seed)
+{
+	unsigned h = (unsigned)(x % cells) * 374761393u + (unsigned)(y % cells) * 668265263u + seed * 2246822519u;
+
+	h = (h ^ (h >> 13)) * 1274126177u;
+	return ((h ^ (h >> 16)) & 0xffff) / 65535.0f;
+}
+
+/* Value noise on a lattice that wraps every cells, so the texture tiles. */
+static float noise_value(float x, float y, int cells, unsigned seed)
+{
+	int x0 = (int)x, y0 = (int)y;
+	float fx = x - x0, fy = y - y0, a, b;
+
+	fx = fx * fx * (3.0f - 2.0f * fx);
+	fy = fy * fy * (3.0f - 2.0f * fy);
+	a = noise_corner(x0, y0, cells, seed) + (noise_corner(x0 + 1, y0, cells, seed) - noise_corner(x0, y0, cells, seed)) * fx;
+	b = noise_corner(x0, y0 + 1, cells, seed) + (noise_corner(x0 + 1, y0 + 1, cells, seed) - noise_corner(x0, y0 + 1, cells, seed)) * fx;
+	return a + (b - a) * fy;
+}
+
+static void weather_noise_create(void)
+{
+	static unsigned char level[WEATHER_NOISE_SIZE * WEATHER_NOISE_SIZE];
+	int x, y, o, size = WEATHER_NOISE_SIZE;
+
+	/* Four octaves, the same sum common.glsl used to make itself. */
+	for (y = 0; y < size; y++) {
+		for (x = 0; x < size; x++) {
+			float sum = 0.0f, amp = 0.5f;
+
+			for (o = 0; o < 4; o++) {
+				int cells = WEATHER_NOISE_CELLS << o;
+				float s = (float)cells / size;
+
+				sum += noise_value(x * s, y * s, cells, o) * amp;
+				amp *= 0.5f;
+			}
+			level[y * size + x] = (unsigned char)(sum / 0.9375f * 255.0f + 0.5f);
+		}
+	}
+
+	my_glGenTextures(1, &g_weather_noise);
+	real_glActiveTexture(GL_TEXTURE0 + WEATHER_NOISE_UNIT);
+	real_glBindTexture(GL_TEXTURE_2D, g_weather_noise);
+	for (o = 0; o < WEATHER_NOISE_LEVELS; o++) {
+		real_glTexImage2D(GL_TEXTURE_2D, o, GL_R8, size, size, 0, GL_RED, GL_UNSIGNED_BYTE, level);
+		/* Each level is the average of the four texels under it, done in place. */
+		for (y = 0; y < size / 2; y++)
+			for (x = 0; x < size / 2; x++)
+				level[y * (size / 2) + x] = (unsigned char)((level[2 * y * size + 2 * x] + level[2 * y * size + 2 * x + 1] +
+					level[(2 * y + 1) * size + 2 * x] + level[(2 * y + 1) * size + 2 * x + 1] + 2) / 4);
+		size /= 2;
+	}
+	real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, WEATHER_NOISE_LEVELS - 1);
+	real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+	real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+	real_glActiveTexture(g_active_unit);
+}
+
 static void shadow_create(void)
 {
 	static const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -704,6 +839,7 @@ static void shadow_create(void)
 	GLenum status;
 	int i, c;
 
+	weather_noise_create();
 	if (!g_cfg_shadows || !my_glProgramUniformMatrix4fv || !my_glProgramUniform1i)
 		return;
 
@@ -819,6 +955,62 @@ static void time_of_day_apply(void)
 	}
 }
 
+enum { WEATHER_CLEAR, WEATHER_CLOUDY, WEATHER_RAIN, WEATHER_STORM, WEATHER_SNOW };
+
+/* Rain soaks the ground by itself, Wet Ground adds puddles to any weather but snow. */
+static float weather_wet(void)
+{
+	float wet = g_cfg_wet / 100.0f;
+
+	if (g_cfg_weather == WEATHER_SNOW)
+		return 0.0f;
+	if (g_cfg_weather == WEATHER_RAIN || g_cfg_weather == WEATHER_STORM)
+		wet = max(wet, g_cfg_weather_amount / 100.0f);
+	return min(wet, 1.0f);
+}
+
+/* Sent every frame with the camera, so everything agrees where the clouds and puddles are. */
+static void weather_apply(const float *inv_view)
+{
+	static LARGE_INTEGER start;
+	LARGE_INTEGER now, rate;
+	GLuint prog[4];
+	int i;
+
+	QueryPerformanceCounter(&now);
+	QueryPerformanceFrequency(&rate);
+	if (!start.QuadPart)
+		start = now;
+	g_weather_time = (float)((double)(now.QuadPart - start.QuadPart) / rate.QuadPart);
+
+	real_glActiveTexture(GL_TEXTURE0 + WEATHER_NOISE_UNIT);
+	real_glBindTexture(GL_TEXTURE_2D, g_weather_noise);
+	real_glActiveTexture(g_active_unit);
+
+	prog[0] = g_terrain_prog;
+	prog[1] = g_model_prog;
+	prog[2] = g_reflection_prog;
+	prog[3] = g_sprite_prog;
+	for (i = 0; i < 4; i++) {
+		GLuint p = prog[i];
+
+		if (!p)
+			continue;
+		if (g_loc_world_from_view[p] >= 0)
+			my_glProgramUniformMatrix4fv(p, g_loc_world_from_view[p], 1, 0, inv_view);
+		if (g_loc_time[p] >= 0)
+			my_glProgramUniform1f(p, g_loc_time[p], g_weather_time);
+		if (g_loc_weather[p] >= 0)
+			my_glProgramUniform1i(p, g_loc_weather[p], g_cfg_weather);
+		if (g_loc_weather_amount[p] >= 0)
+			my_glProgramUniform1f(p, g_loc_weather_amount[p], g_cfg_weather_amount / 100.0f);
+		if (g_loc_wet[p] >= 0)
+			my_glProgramUniform1f(p, g_loc_wet[p], weather_wet());
+		if (g_loc_weather_noise[p] >= 0)
+			my_glProgramUniform1i(p, g_loc_weather_noise[p], WEATHER_NOISE_UNIT);
+	}
+}
+
 static void shadow_set_receiver(GLuint prog, const float *far_matrix, const float *near_matrix)
 {
 	if (!prog || g_loc_shadow_matrix[prog] < 0)
@@ -868,6 +1060,8 @@ static void shadow_frame_start(const float *view)
 	sprite_set_mode(SPRITE_NORMAL);
 	time_of_day_apply();
 	mat_inv_rigid(inv_view, view);
+	sun_effective(g_light_view, g_light_game, inv_view);
+	weather_apply(inv_view);
 
 	/* The rider stays near the ground, so slowly following them finds it on any track. */
 	memcpy(g_view_up, view + 4, sizeof g_view_up);
@@ -1798,6 +1992,16 @@ static void run_post(void)
 	s.saturation = g_cfg_saturation / 100.0f;
 	s.contrast = g_cfg_contrast / 100.0f;
 	s.split_tone = g_cfg_split_tone / 100.0f;
+	s.sharpen = g_cfg_sharpen / 100.0f;
+	s.sun_disc = g_cfg_sun_disc / 100.0f;
+	s.lens_flare = g_cfg_lens_flare / 100.0f;
+	s.goggles = g_cfg_goggles && g_frame_trimmed;
+	s.sun_moved = sun_moved() ? 1.0f : 0.0f;
+	s.world_from_view = g_prev_inv_view;	/* already this frame's, set when the terrain started */
+	s.time = g_weather_time;
+	s.weather = g_cfg_weather;
+	s.weather_amount = g_cfg_weather_amount / 100.0f;
+	s.wet = weather_wet();
 	s.night = g_cfg_time_of_day / 100.0f;
 	s.motion = g_frame_seconds > 0.0f ? g_cfg_motion_blur / 100.0f * BLUR_SHUTTER / g_frame_seconds : 0.0f;
 	s.blur_near = g_frame_trimmed ? BLUR_NEAR_FIRST : BLUR_NEAR_CHASE;
@@ -1895,26 +2099,42 @@ static void present(HDC dc)
 static const int g_shadow_sizes[] = { 1024, 2048, 4096, 8192 };
 static const int g_msaa_levels[] = { 0, 2, 4, 8 };
 static const int g_aniso_levels[] = { 1, 2, 4, 8, 16 };
+static const int g_weather_kinds[] = { WEATHER_CLEAR, WEATHER_CLOUDY, WEATHER_RAIN, WEATHER_STORM, WEATHER_SNOW };
+static const char *const g_weather_names[] = { "Clear", "Cloudy", "Rain", "Storm", "Snow" };
 
-#define SLIDER(label, key, var, lo, hi, step) { label, key, UI_SLIDER, &var, lo, hi, step, NULL, 0, FALSE }
-#define CHOICE(label, key, var, list) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], TRUE }
+#define SLIDER(tab, label, key, var, lo, hi, step) { label, key, UI_SLIDER, &var, lo, hi, step, NULL, 0, FALSE, NULL, tab }
+#define CHOICE(tab, label, key, var, list) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], TRUE, NULL, tab }
+#define NAMED_CHOICE(tab, label, key, var, list, names) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], FALSE, names, tab }
+#define TOGGLE(tab, label, key, var, restart) { label, key, UI_TOGGLE, &var, 0, 0, 0, NULL, 0, restart, NULL, tab }
 
 static const ui_item g_ui_items[] = {
-	SLIDER("Day to Night", L"time_of_day", g_cfg_time_of_day, 0, 100, 5),
-	SLIDER("Haze", L"fog", g_cfg_fog, 0, 300, 5),
-	SLIDER("Dirt Depth", L"parallax", g_cfg_parallax, 0, 200, 5),
-	SLIDER("Motion Blur", L"motion_blur", g_cfg_motion_blur, 0, 200, 5),
-	SLIDER("Depth of Field", L"dof", g_cfg_dof, 0, 200, 5),
-	SLIDER("Saturation", L"saturation", g_cfg_saturation, 0, 200, 5),
-	SLIDER("Contrast", L"contrast", g_cfg_contrast, 0, 100, 5),
-	SLIDER("Split Toning", L"split_tone", g_cfg_split_tone, 0, 100, 5),
-	SLIDER("Shadow Distance", L"shadow_range", g_cfg_shadow_range, 20, 500, 10),
-	{ "Hide Game HUD", L"hide_hud", UI_TOGGLE, &g_cfg_hide_hud, 0, 0, 0, NULL, 0, FALSE },
-	{ "Hide Cursor in Race", L"hide_cursor", UI_TOGGLE, &g_cfg_hide_cursor, 0, 0, 0, NULL, 0, FALSE },
-	CHOICE("Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes),
-	CHOICE("Antialiasing", L"msaa", g_cfg_msaa, g_msaa_levels),
-	CHOICE("Texture Filtering", L"anisotropy", g_cfg_aniso, g_aniso_levels),
-	{ "Borderless Window", L"borderless", UI_TOGGLE, &g_cfg_borderless, 0, 0, 0, NULL, 0, TRUE },
+	SLIDER(UI_TAB_LOOK, "Haze", L"fog", g_cfg_fog, 0, 300, 5),
+	SLIDER(UI_TAB_LOOK, "Dirt Depth", L"parallax", g_cfg_parallax, 0, 200, 5),
+	SLIDER(UI_TAB_LOOK, "Motion Blur", L"motion_blur", g_cfg_motion_blur, 0, 200, 5),
+	SLIDER(UI_TAB_LOOK, "Depth of Field", L"dof", g_cfg_dof, 0, 200, 5),
+	SLIDER(UI_TAB_LOOK, "Saturation", L"saturation", g_cfg_saturation, 0, 200, 5),
+	SLIDER(UI_TAB_LOOK, "Contrast", L"contrast", g_cfg_contrast, 0, 100, 5),
+	SLIDER(UI_TAB_LOOK, "Split Toning", L"split_tone", g_cfg_split_tone, 0, 100, 5),
+	SLIDER(UI_TAB_LOOK, "Sharpen", L"sharpen", g_cfg_sharpen, 0, 200, 5),
+	SLIDER(UI_TAB_LOOK, "Texture Sharpness", L"texture_sharpness", g_cfg_texture_sharpness, 0, 100, 5),
+	SLIDER(UI_TAB_LOOK, "Lens Flare", L"lens_flare", g_cfg_lens_flare, 0, 200, 5),
+	TOGGLE(UI_TAB_LOOK, "Goggles in First Person", L"goggles", g_cfg_goggles, FALSE),
+
+	SLIDER(UI_TAB_WEATHER, "Day to Night", L"time_of_day", g_cfg_time_of_day, 0, 100, 5),
+	NAMED_CHOICE(UI_TAB_WEATHER, "Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names),
+	SLIDER(UI_TAB_WEATHER, "Weather Strength", L"weather_amount", g_cfg_weather_amount, 0, 100, 5),
+	SLIDER(UI_TAB_WEATHER, "Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
+	SLIDER(UI_TAB_WEATHER, "Sun Disc", L"sun_disc", g_cfg_sun_disc, 0, 200, 5),
+	SLIDER(UI_TAB_WEATHER, "Sun Height (0 Track)", L"sun_height", g_cfg_sun_height, 0, 90, 1),
+	SLIDER(UI_TAB_WEATHER, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
+	SLIDER(UI_TAB_WEATHER, "Shadow Distance", L"shadow_range", g_cfg_shadow_range, 20, 500, 10),
+
+	TOGGLE(UI_TAB_DISPLAY, "Hide Game HUD", L"hide_hud", g_cfg_hide_hud, FALSE),
+	TOGGLE(UI_TAB_DISPLAY, "Hide Cursor in Race", L"hide_cursor", g_cfg_hide_cursor, FALSE),
+	CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes),
+	CHOICE(UI_TAB_DISPLAY, "Antialiasing", L"msaa", g_cfg_msaa, g_msaa_levels),
+	CHOICE(UI_TAB_DISPLAY, "Texture Filtering", L"anisotropy", g_cfg_aniso, g_aniso_levels),
+	TOGGLE(UI_TAB_DISPLAY, "Borderless Window", L"borderless", g_cfg_borderless, TRUE),
 };
 
 /* Sliders belong to the pack. The default pack's stay in the main section, where they always were. */
@@ -1976,19 +2196,33 @@ void ui_enabled_changed(int enabled)
 	WritePrivateProfileStringW(L"mxs-shaders", L"enabled", enabled ? L"1" : L"0", path);
 }
 
-/* The game never set these itself, so its own look has them at 1. */
-static void aniso_apply(void)
+/* A negative bias picks a sharper mip level, from the Texture Sharpness setting. */
+static float lod_bias_wanted(void)
 {
+	return g_cfg_enabled ? -g_cfg_texture_sharpness / 100.0f : 0.0f;
+}
+
+/* The game never set these itself, so its own look has anisotropy at 1 and no bias. */
+static void texture_filter_apply(void)
+{
+	static BOOL bias_touched;
 	GLuint unit = g_active_unit - GL_TEXTURE0, t;
+	BOOL bias;
 
 	g_aniso = g_cfg_enabled ? g_aniso_setting : 1.0f;
-	if (g_aniso_setting <= 1.0f)
+	g_lod_bias = lod_bias_wanted();
+	bias = g_lod_bias != 0.0f || bias_touched;
+	bias_touched = g_lod_bias != 0.0f;
+	if (g_aniso_setting <= 1.0f && !bias)
 		return;
 	for (t = 1; t < MAX_IDS; t++) {
 		if (!g_tex[t].aniso || !my_glIsTexture(t))
 			continue;
 		real_glBindTexture(GL_TEXTURE_2D, t);
-		real_glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, g_aniso);
+		if (g_aniso_setting > 1.0f)
+			real_glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, g_aniso);
+		if (bias)
+			real_glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, g_lod_bias);
 	}
 	real_glBindTexture(GL_TEXTURE_2D, unit < 32 ? g_unit_tex[unit] : g_bound_tex);
 }
@@ -2005,7 +2239,7 @@ static void enabled_apply(void)
 		fbo_create(r.right, r.bottom);
 	bind_current_fb();
 	alpha_to_coverage_update();
-	aniso_apply();
+	texture_filter_apply();
 	g_reload_requested = TRUE;
 }
 
@@ -2099,6 +2333,8 @@ static void apply_aniso(GLenum target, GLint filter)
 			real_glTexParameterf(target, GL_TEXTURE_MAX_ANISOTROPY, g_aniso);
 			g_aniso_count++;
 		}
+		if (g_lod_bias != 0.0f)
+			real_glTexParameterf(target, GL_TEXTURE_LOD_BIAS, g_lod_bias);
 	}
 }
 
@@ -2611,6 +2847,12 @@ static void program_refresh(GLuint program)
 		g_loc_screen[program] = real_glGetUniformLocation(program, "u_screen");
 		g_loc_hdr[program] = real_glGetUniformLocation(program, "u_hdr");
 		g_loc_parallax[program] = real_glGetUniformLocation(program, "u_parallax");
+		g_loc_world_from_view[program] = real_glGetUniformLocation(program, "u_world_from_view");
+		g_loc_time[program] = real_glGetUniformLocation(program, "u_time");
+		g_loc_weather[program] = real_glGetUniformLocation(program, "u_weather");
+		g_loc_weather_amount[program] = real_glGetUniformLocation(program, "u_weather_amount");
+		g_loc_wet[program] = real_glGetUniformLocation(program, "u_wet");
+		g_loc_weather_noise[program] = real_glGetUniformLocation(program, "u_weather_noise");
 
 		g_prog_role[program] = ROLE_NONE;
 		if (role && !strcmp(role, "terrain")) {
@@ -2783,6 +3025,16 @@ static void load_live_settings(void)
 	g_cfg_saturation = pack_int(L"saturation", 110);
 	g_cfg_contrast = pack_int(L"contrast", 20);
 	g_cfg_split_tone = pack_int(L"split_tone", 20);
+	g_cfg_sharpen = pack_int(L"sharpen", 30);
+	g_cfg_texture_sharpness = pack_int(L"texture_sharpness", 0);
+	g_cfg_lens_flare = pack_int(L"lens_flare", 50);
+	g_cfg_sun_disc = pack_int(L"sun_disc", 0);
+	g_cfg_sun_height = pack_int(L"sun_height", 0);
+	g_cfg_sun_turn = pack_int(L"sun_turn", 0);
+	g_cfg_goggles = ini_int(L"goggles", 0);
+	g_cfg_weather = min(max(ini_int(L"weather", WEATHER_CLEAR), WEATHER_CLEAR), WEATHER_SNOW);
+	g_cfg_weather_amount = pack_int(L"weather_amount", 60);
+	g_cfg_wet = pack_int(L"wet", 0);
 	g_cfg_hide_hud = ini_int(L"hide_hud", 0);
 	g_cfg_hide_cursor = ini_int(L"hide_cursor", 1);
 	g_cfg_ui_key = ini_int(L"ui_key", VK_F8);
@@ -2944,14 +3196,21 @@ HOOK(void, glUniformMatrix4fv, (GLint location, GLsizei count, GLboolean transpo
 HOOK(void, glUniform3fv, (GLint location, GLsizei count, const float *value))
 {
 	GLuint p = g_cur_prog;
+	GLint real = p < MAX_IDS && location >= 0 && location < g_uni_count[p] ? g_uni[p][location].real : -1;
 
+	/* The game's own shading follows the moved sun. Its camera is last frame's until the terrain starts. */
+	if (real >= 0 && g_prog_role[p] && real == g_loc_light[p] && count == 1) {
+		memcpy(g_light_game, value, sizeof g_light_game);
+		if (g_have_prev_cam)
+			sun_effective(g_light_view, value, g_prev_inv_view);
+		else
+			memcpy(g_light_view, value, sizeof g_light_view);
+		value = g_light_view;
+		g_have_light = TRUE;
+	}
 	location = uni_set(location, REC_UNIFORM3FV, count, 0, 0, value, count * 12);
 	rec(REC_UNIFORM3FV, location, count, 0, 0, 0, 0, value, count * 12);
 	real_glUniform3fv(location, count, value);
-	if (p < MAX_IDS && g_prog_role[p] && location >= 0 && location == g_loc_light[p]) {
-		memcpy(g_light_view, value, sizeof g_light_view);
-		g_have_light = TRUE;
-	}
 }
 
 static void shadow_pass_uniforms(GLuint prog, const float *projection, int pass)
