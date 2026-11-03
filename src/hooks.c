@@ -2128,6 +2128,7 @@ static void run_post(void)
 */
 static void borderless_apply(HWND hwnd)
 {
+#ifdef _WIN32
 	LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
 	MONITORINFO info = { sizeof info };
 	const RECT *r = &info.rcMonitor;
@@ -2140,6 +2141,11 @@ static void borderless_apply(HWND hwnd)
 	SetWindowPos(hwnd, HWND_TOP, r->left, r->top, r->right - r->left, r->bottom - r->top + 1,
 		     SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
 	log_msg("borderless window %ldx%ld", r->right - r->left, r->bottom - r->top + 1);
+#else
+	/* On Linux the game asks the window manager for fullscreen (_NET_WM_STATE_FULLSCREEN), which
+	 changes no display mode, so there is no black screen to avoid. */
+	(void)hwnd;
+#endif
 }
 
 static void present(HDC dc)
@@ -2239,7 +2245,9 @@ static const ui_item g_ui_items[] = {
 	NAMED_CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes, g_shadow_names, TRUE),
 	CHOICE(UI_TAB_DISPLAY, "Antialiasing", L"msaa", g_cfg_msaa, g_msaa_levels),
 	CHOICE(UI_TAB_DISPLAY, "Texture Filtering", L"anisotropy", g_cfg_aniso, g_aniso_levels),
+#ifdef _WIN32
 	TOGGLE(UI_TAB_DISPLAY, "Borderless Window", L"borderless", g_cfg_borderless, TRUE),
+#endif
 };
 
 /* Sliders belong to the pack. The default pack's stay in the main section, where they always were. */
@@ -2637,6 +2645,7 @@ HOOK(void, glFinish, (void))
 	real_glFinish();
 }
 
+#ifdef _WIN32
 HOOK(HGLRC, wglCreateContext, (HDC dc))
 {
 	HGLRC rc = real_wglCreateContext(dc);
@@ -2697,6 +2706,7 @@ HOOK(BOOL, wglSwapLayerBuffers, (HDC dc, UINT planes))
 	frame_boundary("wglSwapLayerBuffers");
 	return real_wglSwapLayerBuffers(dc, planes);
 }
+#endif
 
 /* --- dynamic hooks --- */
 
@@ -2771,6 +2781,7 @@ static char *pack_shader(const char *role, GLenum type, const char *game_src)
 	return out;
 }
 
+#ifdef _WIN32
 HOOK(HGLRC, wglCreateContextAttribsARB, (HDC dc, HGLRC share, const int *attribs))
 {
 	int patched[32];
@@ -2797,6 +2808,7 @@ HOOK(HGLRC, wglCreateContextAttribsARB, (HDC dc, HGLRC share, const int *attribs
 	g_main_rc = rc;
 	return rc;
 }
+#endif
 
 HOOK(GLuint, glCreateShader, (GLenum type))
 {
@@ -3665,7 +3677,9 @@ typedef struct {
 #define DYN(n) { #n, (PROC)hook_##n, (PROC *)&real_##n }
 
 static const dyn_hook g_dyn[] = {
+#ifdef _WIN32
 	DYN(wglCreateContextAttribsARB),
+#endif
 	DYN(glCreateShader),
 	DYN(glShaderSource),
 	DYN(glCompileShader),
@@ -3693,6 +3707,7 @@ static const dyn_hook g_dyn[] = {
 	DYN(glUniformMatrix3fv),
 };
 
+#ifdef _WIN32
 HOOK(PROC, wglGetProcAddress, (LPCSTR name))
 {
 	PROC p = real_wglGetProcAddress(name);
@@ -3711,8 +3726,17 @@ HOOK(PROC, wglGetProcAddress, (LPCSTR name))
 	}
 	return p;
 }
+#endif
 
 /* --- init --- */
+
+#ifndef _WIN32
+/* What wglGetProcAddress is to the rest of this file. glXGetProcAddress also finds GL 1.1 functions. */
+static PROC linux_get_proc(LPCSTR name)
+{
+	return GetProcAddress(g_real_gl, name);
+}
+#endif
 
 #define STATIC(n) real_##n = (n##_t)GetProcAddress(g_real_gl, #n)
 #define STATIC_MY(n) my_##n = (n##_t)GetProcAddress(g_real_gl, #n)
@@ -3791,10 +3815,87 @@ void hooks_init(void)
 	STATIC(glTexImage2D);
 	STATIC(glReadPixels);
 	STATIC(glFinish);
+#ifdef _WIN32
 	STATIC(wglCreateContext);
 	STATIC(wglDeleteContext);
 	STATIC(wglMakeCurrent);
 	STATIC(wglSwapBuffers);
 	STATIC(wglSwapLayerBuffers);
 	STATIC(wglGetProcAddress);
+#else
+	real_wglGetProcAddress = linux_get_proc;
+#endif
 }
+
+#ifndef _WIN32
+/*
+ --- Linux: what the wgl hooks above do, called by preload.c's GLX hooks ---
+
+ The Linux game makes one legacy context with glXCreateContext and never asks for a version,
+ so gl_major and gl_minor have nothing to change. The main context is the first one made
+ current on a window, which preload.c also uses to pick the swaps that end a frame.
+*/
+void hooks_glx_context_created(HGLRC rc)
+{
+	log_msg("glXCreateContext -> %p", rc);
+}
+
+void hooks_glx_context_destroyed(HGLRC rc)
+{
+	log_msg("glXDestroyContext %p", rc);
+	if (rc == g_main_rc) {
+		g_main_rc = NULL;
+		g_fbo = 0;
+		g_aniso = 1.0f;
+		post_context_lost();
+		ui_context_lost();
+	}
+}
+
+void hooks_glx_made_current(HDC dc, HGLRC rc)
+{
+	typedef const char *(WINAPI *glGetString_t)(GLenum);
+	glGetString_t gs = (glGetString_t)GetProcAddress(g_real_gl, "glGetString");
+
+	log_msg("glXMakeCurrent %p on window 0x%lx", rc, dc);
+	if (!g_main_rc) {
+		g_main_rc = rc;
+		if (g_cfg_gl_major > 0)
+			log_msg("legacy GLX context: the driver picks its version, gl_major and gl_minor aren't used");
+	}
+	if (gs) {
+		log_msg("  GL_VENDOR   %s", gs(GL_VENDOR));
+		log_msg("  GL_RENDERER %s", gs(GL_RENDERER));
+		log_msg("  GL_VERSION  %s", gs(GL_VERSION));
+		log_msg("  GLSL        %s", gs(GL_SHADING_LANGUAGE_VERSION));
+	}
+	if (rc == g_main_rc && !real_glBindFramebuffer)
+		context_ready(dc);
+}
+
+void hooks_glx_swap(HDC dc)
+{
+	if (!g_saw_swap)
+		log_msg("glXSwapBuffers reached the library");
+	g_saw_swap = TRUE;
+	present(dc);
+	frame_boundary("glXSwapBuffers");
+}
+
+/* What to hand the game for a glXGetProcAddress name, like the wglGetProcAddress hook. */
+void *hooks_glx_proc(const char *name, void *p)
+{
+	size_t i;
+
+	log_msg("glXGetProcAddress %s -> %p", name, p);
+	if (!p)
+		return NULL;
+	for (i = 0; i < sizeof g_dyn / sizeof g_dyn[0]; i++) {
+		if (!strcmp(name, g_dyn[i].name)) {
+			*g_dyn[i].real = (PROC)p;
+			return (void *)g_dyn[i].hook;
+		}
+	}
+	return p;
+}
+#endif

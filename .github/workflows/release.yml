@@ -1,6 +1,7 @@
 name: Release
 
-# Pushing a tag like v1.0.0 builds the DLL and publishes it as a GitHub release.
+# Pushing a tag like v1.0.0 builds the DLL and publishes it as a GitHub release,
+# then builds the Linux library and adds it to the same release.
 on:
   push:
     tags:
@@ -37,3 +38,24 @@ jobs:
         run: |
           $packs = (Get-ChildItem build\*-pack.zip).FullName
           gh release create "${{ github.ref_name }}" build\opengl32.dll $packs --generate-notes
+
+  linux:
+    # An older Ubuntu keeps the glibc the library needs low, so more distributions can load it.
+    runs-on: ubuntu-22.04
+    needs: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential libx11-dev libfreetype-dev
+
+      - name: Build
+        run: make
+
+      - name: Check the exports
+        run: make exports
+
+      - name: Add to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" build/libmxs-shaders.so mxs-shaders.sh

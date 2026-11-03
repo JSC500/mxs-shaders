@@ -11,6 +11,12 @@
 #include "ui.h"
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include "platform.h"
+#include <dlfcn.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#endif
 
 #define GL_TEXTURE_2D 0x0DE1
 #define GL_TEXTURE_MIN_FILTER 0x2801
@@ -100,8 +106,10 @@ static int g_font_px, g_cell, g_advance[FONT_LAST - FONT_FIRST + 1];
 static float g_vertices[MAX_QUADS * 6 * VERTEX_FLOATS];
 static int g_vertex_count;
 
+#ifdef _WIN32
 static HWND g_input_window;
 static HCURSOR g_game_cursor;
+#endif
 static BOOL g_mouse_was_down, g_reading_key, g_key_was_down[256];
 static int g_dragging = -1;
 
@@ -245,6 +253,7 @@ BOOL ui_is_reading_key(void)
 
 /* --- the font --- */
 
+#ifdef _WIN32
 /* Verdana Bold Italic is close to the game's menu font and comes with Windows. */
 static void font_build(int px)
 {
@@ -297,6 +306,133 @@ static void font_build(int px)
 	g_font_px = px;
 	g_cell = cell;
 }
+#else
+/*
+ Linux: the same glyph grid drawn with FreeType. DejaVu Sans Bold Oblique is the closest free
+ match to Verdana Bold Italic (DejaVu grew out of Bitstream Vera, which has Verdana's shapes).
+ FreeType and the font are looked up when the panel first opens, so a system without them still
+ runs the game and the shaders, and only the panel's text is missing. A font of your own can go
+ in the data folder as fonts/panel.ttf.
+*/
+static const char *const g_font_files[] = {
+	"/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",	/* Debian, Ubuntu */
+	"/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-BoldOblique.ttf",	/* Fedora */
+	"/usr/share/fonts/TTF/DejaVuSans-BoldOblique.ttf",		/* Arch */
+	"/usr/share/fonts/dejavu/DejaVuSans-BoldOblique.ttf",		/* openSUSE and others */
+	"/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
+	"/usr/share/fonts/liberation-sans/LiberationSans-BoldItalic.ttf",
+	"/usr/share/fonts/truetype/noto/NotoSans-BoldItalic.ttf",
+	"/usr/share/fonts/noto/NotoSans-BoldItalic.ttf",
+};
+
+static struct {
+	int tried;
+	FT_Library lib;
+	FT_Face face;
+	FT_Error (*Init_FreeType)(FT_Library *);
+	FT_Error (*New_Face)(FT_Library, const char *, FT_Long, FT_Face *);
+	FT_Error (*Set_Pixel_Sizes)(FT_Face, FT_UInt, FT_UInt);
+	FT_Error (*Load_Char)(FT_Face, FT_ULong, FT_Int32);
+} g_ft;
+
+static int freetype_open(void)
+{
+	char own[MAX_PATH];
+	void *so;
+	size_t i;
+
+	if (g_ft.tried)
+		return g_ft.face != NULL;
+	g_ft.tried = 1;
+	so = dlopen("libfreetype.so.6", RTLD_NOW | RTLD_LOCAL);
+	if (!so) {
+		log_msg("ui: font failed, libfreetype.so.6 not found");
+		return 0;
+	}
+	*(void **)&g_ft.Init_FreeType = dlsym(so, "FT_Init_FreeType");
+	*(void **)&g_ft.New_Face = dlsym(so, "FT_New_Face");
+	*(void **)&g_ft.Set_Pixel_Sizes = dlsym(so, "FT_Set_Pixel_Sizes");
+	*(void **)&g_ft.Load_Char = dlsym(so, "FT_Load_Char");
+	if (!g_ft.Init_FreeType || !g_ft.New_Face || !g_ft.Set_Pixel_Sizes || !g_ft.Load_Char ||
+	    g_ft.Init_FreeType(&g_ft.lib)) {
+		log_msg("ui: font failed, FreeType didn't start");
+		return 0;
+	}
+	plat_data_path(own, sizeof own, "fonts/panel.ttf");
+	if (plat_is_file(own) && !g_ft.New_Face(g_ft.lib, own, 0, &g_ft.face)) {
+		log_msg("ui: font %s", own);
+		return 1;
+	}
+	for (i = 0; i < sizeof g_font_files / sizeof g_font_files[0]; i++) {
+		if (plat_is_file(g_font_files[i]) && !g_ft.New_Face(g_ft.lib, g_font_files[i], 0, &g_ft.face)) {
+			log_msg("ui: font %s", g_font_files[i]);
+			return 1;
+		}
+	}
+	g_ft.face = NULL;
+	log_msg("ui: font failed, no DejaVu Sans, Liberation Sans or Noto Sans bold italic found "
+		"(install fonts-dejavu-core, or put a .ttf in the data folder as fonts/panel.ttf)");
+	return 0;
+}
+
+static void font_build(int px)
+{
+	int cell = px * 2, w = FONT_COLUMNS * cell, h = FONT_ROWS * cell, c, i, ascent;
+	unsigned char *pixels;
+	FT_Face f;
+
+	if (!freetype_open())
+		return;
+	f = g_ft.face;
+	pixels = calloc((size_t)w * h, 4);
+	if (!pixels || g_ft.Set_Pixel_Sizes(f, 0, (FT_UInt)px)) {
+		log_msg("ui: font failed at %d px", px);
+		free(pixels);
+		return;
+	}
+	ascent = (int)((f->size->metrics.ascender + 63) >> 6);
+	for (c = FONT_FIRST; c <= FONT_LAST; c++) {
+		FT_GlyphSlot g;
+		int x0, y0, gx, gy;
+
+		i = c - FONT_FIRST;
+		g_advance[i] = 0;
+		if (g_ft.Load_Char(f, (FT_ULong)c, FT_LOAD_RENDER))
+			continue;
+		g = f->glyph;
+		g_advance[i] = (int)((g->advance.x + 32) >> 6);
+		/* Where TextOutA puts the cell's top-left corner, with the baseline one ascent below. */
+		x0 = i % FONT_COLUMNS * cell + px / 4 + g->bitmap_left;
+		y0 = i / FONT_COLUMNS * cell + ascent - g->bitmap_top;
+		for (gy = 0; gy < (int)g->bitmap.rows; gy++) {
+			int y = y0 + gy;
+
+			if (y < i / FONT_COLUMNS * cell || y >= (i / FONT_COLUMNS + 1) * cell)
+				continue;
+			for (gx = 0; gx < (int)g->bitmap.width; gx++) {
+				int x = x0 + gx;
+				unsigned char a;
+
+				if (x < i % FONT_COLUMNS * cell || x >= (i % FONT_COLUMNS + 1) * cell)
+					continue;
+				a = g->bitmap.buffer[gy * g->bitmap.pitch + gx];
+				memset(pixels + ((size_t)y * w + x) * 4, a, 4); /* white, like the GDI text */
+			}
+		}
+	}
+
+	if (!g_font)
+		gl_GenTextures(1, &g_font);
+	gl_ActiveTexture(GL_TEXTURE0 + UNIT_FONT);
+	gl_BindTexture(GL_TEXTURE_2D, g_font);
+	gl_TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+	gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	free(pixels);
+	g_font_px = px;
+	g_cell = cell;
+}
+#endif
 
 /* --- drawing --- */
 
@@ -398,6 +534,7 @@ static void text(float x, float y, float h, const char *s, color c)
 
 /* --- the input window --- */
 
+#ifdef _WIN32
 static LRESULT CALLBACK input_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	switch (msg) {
@@ -445,6 +582,22 @@ static void input_window_close(void)
 		DestroyWindow(g_input_window);
 	g_input_window = NULL;
 }
+#else
+/*
+ Linux: no window is needed. While the panel is open, the library's X hooks drop the game's
+ button events and its XQueryPointer calls see no buttons and a still pointer (input_x11.c).
+*/
+static void input_window_open(HWND game)
+{
+	(void)game;
+	plat_block_pointer(1);
+}
+
+static void input_window_close(void)
+{
+	plat_block_pointer(0);
+}
+#endif
 
 static void packs_scan(void)
 {

@@ -9,7 +9,8 @@ This project aims to bring improved visuals such as shadows from real time dynam
 
 ## Layout
 - `src/`: the `opengl32.dll` proxy. `hooks.c` is the GL hooks, shadows and recording, `post.c` the post passes, `ui.c` the F8 panel, `pack.c` shader packs.
-- `shaderpacks/default/`: the default pack, built into the DLL by `scripts/gen_pack.ps1`.
+- `src/` for Linux: the same shared files build into `libmxs-shaders.so`, loaded with `LD_PRELOAD` (see "Linux" below). `preload.c` replaces `proxy.c`, the stubs and the wgl hooks. `win_compat.h` gives the shared code the Win32 names it uses, on top of `platform_linux.c`, `input_x11.c` and `log_linux.c`. The few Windows-only parts (wgl hooks, `borderless_apply`, the GDI font, the input window) are behind `#ifdef _WIN32`.
+- `shaderpacks/default/`: the default pack, built into the DLL by `scripts/gen_pack.ps1` (into the Linux library by `scripts/gen_pack.c`).
 - `shaderpacks/psx/`: an optional PS1 look. It isn't built in, it ships as `psx-pack.zip`.
 - `shaderpacks/iMotoWeatherPack/`: Deband, Daltonize and DisplayDepth translated from ReShade, run after the default lens. Their settings are constants in `reshade.glsl`. It isn't built in, it ships as `iMotoWeatherPack-pack.zip`. The release packs every folder in `shaderpacks/` as `<name>-pack.zip`.
 - `%LOCALAPPDATA%\mxs-shaders`: everything at runtime: `game\` (the dev copy of the game, if there is one), `mxs-shaders.ini`, `mxs-shaders.log`, `frames\`, `shaders\`, `riders\`, `shaderpacks\`.
@@ -61,6 +62,22 @@ $s.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
 For anything that happens before a race, such as first-run behaviour, packs and defaults, start the game against an empty profile by pointing `LOCALAPPDATA` at a scratch folder, wait for `wglSwapBuffers reached` in that folder's log, then close it. This leaves the user's settings alone. Warn the user first, because a game window opens briefly.
 
 The game compiles every shader at startup, so this also checks that pack changes compile: look for `post-processing ready` and the `role ... using pack shader` lines, and no `failed`. If the installed DLL is older than the source, put the changed default-pack files in the scratch folder's `shaderpacks\default`. Files on disk override the built-in pack, so the new shaders are tested without touching the install.
+
+## Linux
+The native Linux game is `mxbin`, started by the script `mx`. It draws with a legacy `glXCreateContext` context into a child of its top-level window, under XWayland on GNOME. Everything at runtime goes to `$XDG_DATA_HOME/mxs-shaders`, normally `~/.local/share/mxs-shaders`, with the same layout and ini as on Windows.
+
+- **Build:** `make` gives `build/libmxs-shaders.so`. `make exports` lists the exported symbols, which must be only the hooked GL, GLX and X functions. `make test` runs `tests/run.sh`: a stand-in `mxbin` on Xvfb with Mesa, real X input through XTest, and a frame around its window like GNOME's. With `MXS_GAME_SHADERS=<probe shaders folder>` it also compiles the game's shaders, so the packs have to compile and link on Mesa. Those files belong to the game: keep them out of the repo.
+- **Keep Windows unchanged:** every Linux change to a shared file goes in an `#ifndef _WIN32` branch or into `win_compat.h`. There's no Windows compiler on the Linux side, so check that what MSVC sees is the same as before.
+- **Launch:** `mxs-shaders.sh` in the game folder starts `mxbin` with the library preloaded through a link in the data folder, because `LD_PRELOAD` can't name a path with a space. `MX_HOME` points it at a game folder elsewhere. The library does nothing in any process not called `mxbin`.
+- **Log:** the same lines as on Windows, except `glXSwapBuffers reached the library` in place of `wglSwapBuffers reached`. Linux-only lines: `focus on the game` and `focus elsewhere` with window ids, `panel open` and `panel closed: N pointer events were held back`, `cursor hidden` and `cursor shown again`, and `ui: font <path>`.
+- **Testing without the user:** point `XDG_DATA_HOME` at a scratch folder instead of `LOCALAPPDATA`.
+
+How the Linux game behaves, from a probe run (NVIDIA under XWayland on GNOME, gamepad rider):
+- **Input:** it never grabs or warps the pointer. It reads clicks both as events and from `XQueryPointer`'s button mask, twice a frame. So while the panel is open, `preload.c` drops button events and its `XQueryPointer` hook reports no buttons and a still pointer. Keys still reach the game, as on Windows. Mouse-look riders haven't been tested.
+- **Focus:** GNOME frames the top-level window and focuses it, not the drawing child. Any window from the child up to the frame counts as the game.
+- **Window size:** it changes around fullscreen toggles (1920x1043 and 1920x1080), so it's read from X, not assumed.
+- **Cursor:** the game gives its drawing window a cursor when creating it and imports no `XDefineCursor`. Hiding swaps in a blank cursor and puts the recorded one back.
+- **Rendering:** the same shader names and draw order as on Windows, and its own 4096x4096 framebuffer before the main pass. VAO numbers depend on the bike, so detection must keep working from draw order.
 
 ## How the mod works
 - **Texture units:** the shadow maps use 8-9, the post passes 10-16, the F8 panel's font 17 and the weather noise 18. A new texture that stays bound needs its own unit above these.
