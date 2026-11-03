@@ -19,9 +19,9 @@ fail=0
 check() { if eval "$2"; then echo "  ok: $1"; else echo "  FAIL: $1"; fail=1; fi; }
 
 rm -rf "$out" && mkdir -p "$game" "$data"
-gcc -std=gnu11 -Wall -Wextra -Isrc -o "$out/ini_test" tests/ini_test.c src/platform_linux.c -ldl || exit 1
-gcc -O1 -Wall -o "$game/mxbin" tests/fake_mxbin.c $L/libGL.so.1 -lX11 || exit 1
-gcc -O1 -Wall -o "$out/driver" tests/driver.c $L/libXtst.so.6 -lX11 || exit 1
+gcc -std=gnu11 -Wall -Wextra -Werror=incompatible-pointer-types -Werror=implicit-function-declaration -Isrc -o "$out/ini_test" tests/ini_test.c src/platform_linux.c -ldl || exit 1
+gcc -O1 -Wall -Werror=incompatible-pointer-types -Werror=implicit-function-declaration -o "$game/mxbin" tests/fake_mxbin.c $L/libGL.so.1 -lX11 || exit 1
+gcc -O1 -Wall -Werror=incompatible-pointer-types -Werror=implicit-function-declaration -o "$out/driver" tests/driver.c $L/libXtst.so.6 -lX11 || exit 1
 cp "$game/mxbin" "$out/notmx"
 cp "$lib" mxs-shaders.sh "$game/"
 # Small shadow maps keep the software renderer quick. Everything else starts from the defaults.

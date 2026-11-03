@@ -2437,7 +2437,7 @@ static void context_ready(HDC dc)
 	/* Not tied to g_fbo: starting with the mod off has none yet, and it can be turned on later. */
 	if (g_cfg_post && g_fbo_samples > 1)
 		post_init(real_wglGetProcAddress);
-		ui_init(real_wglGetProcAddress, g_ui_items, sizeof g_ui_items / sizeof g_ui_items[0]);
+	ui_init(real_wglGetProcAddress, g_ui_items, sizeof g_ui_items / sizeof g_ui_items[0]);
 }
 
 static void apply_aniso(GLenum target, GLint filter)
@@ -2876,7 +2876,7 @@ HOOK(void, glShaderSource, (GLuint shader, GLsizei count, const GLchar *const *s
 		g_shader_replaced[shader] = repl != NULL;
 	}
 	if (repl) {
-		real_glShaderSource(shader, 1, &repl, NULL);
+		real_glShaderSource(shader, 1, (const GLchar *const *)&repl, NULL);
 		free(repl);
 	} else {
 		real_glShaderSource(shader, count, string, length);

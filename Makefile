@@ -9,10 +9,16 @@
 
 CC      ?= gcc
 CFLAGS  ?= -O2 -g
+# What the build needs, kept apart from CFLAGS so "make CFLAGS=..." can't drop it.
 FT_CFLAGS := $(shell pkg-config --cflags freetype2 2>/dev/null || echo -I/usr/include/freetype2)
-CFLAGS  += -std=gnu11 -fPIC -fvisibility=hidden -fno-strict-aliasing -Isrc $(FT_CFLAGS) \
-           -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-missing-braces -Wno-unused-function
-LDFLAGS += -shared -Wl,-z,defs -Wl,--as-needed
+MXS_CFLAGS = -std=gnu11 -fPIC -fvisibility=hidden -fno-strict-aliasing -Isrc $(FT_CFLAGS) \
+             -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-missing-braces -Wno-unused-function \
+             $(GCC14_ERRORS)
+# GCC 14 and newer refuse these by default. Making them errors on older compilers too keeps the build
+# from passing on one machine and failing on another.
+GCC14_ERRORS = -Werror=incompatible-pointer-types -Werror=implicit-function-declaration \
+               -Werror=int-conversion -Werror=implicit-int
+MXS_LDFLAGS = -shared -Wl,-z,defs -Wl,--as-needed
 LDLIBS  += -lX11 -ldl -lm
 
 # The shared code, the Linux layer, and the default pack baked in like build.bat does.
@@ -25,7 +31,7 @@ PACK   = $(wildcard shaderpacks/default/*)
 all: $(LIB)
 
 build/linux/%.o: src/%.c src/*.h | build/linux
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(MXS_CFLAGS) $(CFLAGS) -c -o $@ $<
 
 build/linux/gen_pack: scripts/gen_pack.c | build/linux
 	$(CC) -O2 -o $@ $<
@@ -34,10 +40,10 @@ build/linux/default_pack.c: build/linux/gen_pack $(PACK)
 	build/linux/gen_pack shaderpacks/default $@
 
 build/linux/default_pack.o: build/linux/default_pack.c src/common.h
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(MXS_CFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(LIB): $(OBJ)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ) $(LDLIBS)
+	$(CC) $(MXS_CFLAGS) $(CFLAGS) $(MXS_LDFLAGS) $(LDFLAGS) -o $@ $(OBJ) $(LDLIBS)
 
 build/linux:
 	mkdir -p $@
