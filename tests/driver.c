@@ -110,7 +110,7 @@ int main(int argc, char **argv)
 	key(XK_F8);
 	XSetInputFocus(d, other, RevertToPointerRoot, CurrentTime);
 	XSync(d, False);
-	usleep(400000);
+	usleep(1500000); /* focus is checked every 15 frames, about 0.75 s on the software renderer */
 	XSetInputFocus(d, top, RevertToParent, CurrentTime);
 	XSync(d, False);
 	usleep(400000);

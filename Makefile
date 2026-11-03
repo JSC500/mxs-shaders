@@ -11,7 +11,10 @@ CC      ?= gcc
 CFLAGS  ?= -O2 -g
 # What the build needs, kept apart from CFLAGS so "make CFLAGS=..." can't drop it.
 FT_CFLAGS := $(shell pkg-config --cflags freetype2 2>/dev/null || echo -I/usr/include/freetype2)
-MXS_CFLAGS = -std=gnu11 -fPIC -fvisibility=hidden -fno-strict-aliasing -Isrc $(FT_CFLAGS) \
+# No sibling calls and kept frame pointers: every hook stays in a crash backtrace instead of
+# jumping straight into the driver, so a backtrace can show whether a GL call went through the mod.
+MXS_CFLAGS = -std=gnu11 -fPIC -fvisibility=hidden -fno-strict-aliasing -fno-optimize-sibling-calls \
+             -fno-omit-frame-pointer -Isrc $(FT_CFLAGS) \
              -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-missing-braces -Wno-unused-function \
              $(GCC14_ERRORS)
 # GCC 14 and newer refuse these by default. Making them errors on older compilers too keeps the build
