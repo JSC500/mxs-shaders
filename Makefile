@@ -48,6 +48,16 @@ $(LIB): $(OBJ)
 build/linux:
 	mkdir -p $@
 
+# FreeType's headers are needed to build the panel font (the library itself is loaded at run time).
+build/linux/ui.o: | check-freetype
+check-freetype:
+	@for d in $(patsubst -I%,%,$(filter -I%,$(FT_CFLAGS))); do [ -f "$$d/ft2build.h" ] && exit 0; done; \
+	echo "mxs-shaders: FreeType's headers aren't installed. Install them and run make again:" >&2; \
+	echo "  Debian/Ubuntu: sudo apt install libfreetype-dev" >&2; \
+	echo "  Fedora:        sudo dnf install freetype-devel" >&2; \
+	echo "  Arch:          sudo pacman -S freetype2" >&2; \
+	exit 1
+
 # The symbols the library exports. Everything else must stay hidden.
 exports: $(LIB)
 	@nm -D --defined-only $(LIB) | awk '$$2 == "T" {print $$3}' | sort
@@ -60,4 +70,4 @@ test: $(LIB)
 clean:
 	rm -rf build/linux $(LIB) build/tests
 
-.PHONY: all exports test clean
+.PHONY: all exports test clean check-freetype
