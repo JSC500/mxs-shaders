@@ -114,6 +114,11 @@ int main(int argc, char **argv)
 	XSetInputFocus(d, top, RevertToParent, CurrentTime);
 	XSync(d, False);
 	usleep(400000);
+	/* Escape with the panel open closes it and must not reach the game; with it closed, it must. */
+	key(XK_F8);
+	key(XK_Escape);
+	usleep(600000);
+	key(XK_Escape);
 	/* Resize the top-level window, as the window manager does around a fullscreen toggle. */
 	XResizeWindow(d, frame, 800, 500);
 	XResizeWindow(d, top, 800, 500);

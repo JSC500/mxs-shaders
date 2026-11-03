@@ -5,8 +5,10 @@
 #include <X11/Xlib.h>
 
 int input_blocking(void);
-int input_is_pointer_event(const XEvent *e);
-void input_count_dropped(void);
+/* Whether any events are being held back from the game now (panel open, or Escape still down). */
+int input_filtering(void);
+/* Whether the game must not see this event. */
+int input_drop_event(const XEvent *e);
 void input_purge(Display *d);
 /* The cursor a game window was given, recorded so it can be put back after hiding. */
 void input_note_cursor(unsigned long window, unsigned long cursor);

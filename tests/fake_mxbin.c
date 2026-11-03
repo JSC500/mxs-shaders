@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <X11/Xlib.h>
+#include <X11/keysym.h>
 #include <X11/Xutil.h>
 /* No GL headers on the build machine, so the few declarations needed are here. */
 typedef unsigned char GLubyte;
@@ -141,7 +142,7 @@ int main(int argc, char **argv)
 	XSetWindowAttributes a;
 	Window top, child;
 	GLXContext ctx;
-	unsigned presses = 0, releases = 0, frames = 0, poll_clicks = 0, was_down = 0;
+	unsigned presses = 0, releases = 0, frames = 0, poll_clicks = 0, was_down = 0, escapes = 0;
 	int quit = 0;
 	FILE *f;
 	void (*use_program)(unsigned);
@@ -191,7 +192,9 @@ int main(int argc, char **argv)
 			XEvent e;
 
 			XNextEvent(d, &e);
-			if (e.type == ButtonPress)
+			if (e.type == KeyPress && e.xkey.keycode == XKeysymToKeycode(d, XK_Escape))
+				escapes++;
+			else if (e.type == ButtonPress)
 				presses++;
 			else if (e.type == ButtonRelease)
 				releases++;
@@ -221,6 +224,7 @@ int main(int argc, char **argv)
 	}
 	printf("game received %u button presses, %u releases, saw %u clicks by polling, ran %u frames\n", presses,
 	       releases, poll_clicks, frames);
+	printf("game received %u escape presses\n", escapes);
 	glXMakeCurrent(d, None, NULL);
 	glXDestroyContext(d, ctx);
 	XCloseDisplay(d);

@@ -9,6 +9,9 @@
 #include "common.h"
 #include "post.h"
 #include "ui.h"
+#ifndef _WIN32
+#include "platform.h"
+#endif
 #include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -579,6 +582,12 @@ static void frame_boundary(const char *source)
 	g_reload_requested = FALSE;
 
 	ui_key = focused && (GetAsyncKeyState(g_cfg_ui_key) & 0x8000) != 0;
+#ifndef _WIN32
+	/* Linux: Escape closes the panel. preload.c keeps it from the game, which would open its menu.
+	 While the panel waits for a new panel key, Escape cancels that instead (ui.c). */
+	if (plat_escape_pressed() && ui_is_open() && !ui_is_reading_key())
+		ui_toggle(g_hwnd);
+#endif
 	if ((ui_key && !g_ui_key_down && !ui_is_reading_key()) || (ui_is_open() && !focused))
 		ui_toggle(g_hwnd);
 	g_ui_key_down = ui_key;

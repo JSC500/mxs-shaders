@@ -265,7 +265,7 @@ static int game_display(Display *d)
 
 EXPORT int XPending(Display *d)
 {
-	if (game_display(d) && input_blocking())
+	if (game_display(d) && input_filtering())
 		input_purge(d);
 	return NEXT(XPending)(d);
 }
@@ -276,7 +276,7 @@ EXPORT int XNextEvent(Display *d, XEvent *e)
 
 	if (!game_display(d))
 		return NEXT(XNextEvent)(d, e);
-	if (input_blocking())
+	if (input_filtering())
 		input_purge(d);
 	for (;;) {
 		r = NEXT(XNextEvent)(d, e);
@@ -284,10 +284,8 @@ EXPORT int XNextEvent(Display *d, XEvent *e)
 			plat_note_resize(e->xconfigure.window);
 		/* One that arrived after the purge. The game only calls this after XPending, so another
 		 event is normally queued. If none is, waiting for one is what XNextEvent does anyway. */
-		if (input_blocking() && input_is_pointer_event(e)) {
-			input_count_dropped();
+		if (input_filtering() && input_drop_event(e))
 			continue;
-		}
 		return r;
 	}
 }
@@ -296,7 +294,7 @@ EXPORT int XIfEvent(Display *d, XEvent *e, Bool (*pred)(Display *, XEvent *, XPo
 {
 	/* Imported by the game but not called in the probe run. Purge first so a predicate that
 	 waits for a click can't see one while the panel is open. */
-	if (game_display(d) && input_blocking())
+	if (game_display(d) && input_filtering())
 		input_purge(d);
 	return NEXT(XIfEvent)(d, e, pred, arg);
 }

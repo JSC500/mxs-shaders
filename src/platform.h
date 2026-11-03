@@ -71,6 +71,8 @@ int plat_pointer(int *x, int *y, int *left_down);
 /* While on, button and motion events for the game's windows are dropped before the game reads them. */
 void plat_block_pointer(int on);
 unsigned plat_pointer_events_dropped(void);
+/* Whether Escape was pressed while the panel was open (held back from the game) since the last call. */
+int plat_escape_pressed(void);
 /* Like ShowCursor: a count that hides the cursor over the game's window while it is below 0. */
 int plat_show_cursor(int show);
 /* Size changes seen by the event or resize hooks, so the size is re-read without a round trip every frame. */

@@ -79,8 +79,12 @@ static char g_keymap[32], g_prev_keymap[32];
 static int g_keymap_valid;
 static KeyCode g_vk_code[256][2];
 static int g_vk_ready;
+static KeyCode g_esc_code;
+static int g_esc_swallow, g_esc_request; /* Escape held back from the game, and not yet handled */
 static int g_ptr_x, g_ptr_y, g_ptr_in, g_ptr_left, g_ptr_frame = -1, g_frame;
 static int g_focus = 1, g_focus_age;
+
+static int code_down(const char *map, KeyCode c);
 
 static void build_vk_codes(void)
 {
@@ -96,6 +100,7 @@ static void build_vk_codes(void)
 				g_vk_code[vk][j] = XKeysymToKeycode(g_dpy, s[j]);
 		}
 	}
+	g_esc_code = XKeysymToKeycode(g_dpy, XK_Escape);
 	g_vk_ready = 1;
 }
 
@@ -205,6 +210,8 @@ void plat_frame_begin(void *display, unsigned long drawable)
 	}
 	memcpy(g_prev_keymap, g_keymap, sizeof g_keymap);
 	XQueryKeymap(d, g_keymap);
+	if (g_esc_swallow && !code_down(g_keymap, g_esc_code))
+		g_esc_swallow = 0;
 	if (!g_keymap_valid) {
 		memcpy(g_prev_keymap, g_keymap, sizeof g_keymap);
 		g_keymap_valid = 1;
@@ -358,11 +365,45 @@ unsigned plat_pointer_events_dropped(void)
 	return g_dropped;
 }
 
-static Bool is_pointer_event(Display *d, XEvent *e, XPointer arg)
+/*
+ While the panel is open, the game gets no button or motion events, and no Escape: it would open
+ the game's menu behind the panel. Escape closes the panel instead (hooks.c asks for it with
+ plat_escape_pressed). Escape stays held back until the key is up, so its auto-repeat can't reach
+ the game right after the panel closes. Other keys reach the game, as they do on Windows.
+*/
+static int is_escape(const XEvent *e)
+{
+	return (e->type == KeyPress || e->type == KeyRelease) && g_esc_code && e->xkey.keycode == g_esc_code;
+}
+
+int input_filtering(void)
+{
+	return g_block || g_esc_swallow;
+}
+
+/* Whether the game must not see e. Counts it and notes an Escape press when it doesn't. */
+int input_drop_event(const XEvent *e)
+{
+	if (g_block && (e->type == ButtonPress || e->type == ButtonRelease || e->type == MotionNotify)) {
+		g_dropped++;
+		return 1;
+	}
+	if ((g_block || g_esc_swallow) && is_escape(e)) {
+		if (e->type == KeyPress && g_block) {
+			g_esc_request = 1;
+			g_esc_swallow = 1;
+		}
+		return 1;
+	}
+	return 0;
+}
+
+static Bool drop_predicate(Display *d, XEvent *e, XPointer arg)
 {
 	(void)d;
 	(void)arg;
-	return e->type == ButtonPress || e->type == ButtonRelease || e->type == MotionNotify;
+	return (g_block && (e->type == ButtonPress || e->type == ButtonRelease || e->type == MotionNotify)) ||
+	       ((g_block || g_esc_swallow) && is_escape(e));
 }
 
 int input_blocking(void)
@@ -370,23 +411,21 @@ int input_blocking(void)
 	return g_block;
 }
 
-int input_is_pointer_event(const XEvent *e)
-{
-	return e->type == ButtonPress || e->type == ButtonRelease || e->type == MotionNotify;
-}
-
-void input_count_dropped(void)
-{
-	g_dropped++;
-}
-
-/* Removes queued pointer events. XCheckIfEvent never blocks. */
+/* Removes queued events the game must not see. XCheckIfEvent never blocks. */
 void input_purge(Display *d)
 {
 	XEvent e;
 
-	while (XCheckIfEvent(d, &e, is_pointer_event, NULL))
-		g_dropped++;
+	while (XCheckIfEvent(d, &e, drop_predicate, NULL))
+		input_drop_event(&e);
+}
+
+int plat_escape_pressed(void)
+{
+	int r = g_esc_request;
+
+	g_esc_request = 0;
+	return r;
 }
 
 /* --- hiding the cursor (ShowCursor) ---
