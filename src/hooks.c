@@ -85,6 +85,7 @@
 	ret WINAPI hook_##name params
 
 static void cursor_update(void);
+static void view_state_log(void);
 
 /* --- capture state --- */
 
@@ -516,6 +517,7 @@ static void frame_boundary(const char *source)
 
 	if (g_frame % 600 == 0)
 		log_frame_stats(source);
+	view_state_log();
 
 	g_frame++;
 	g_draws = g_clears = g_binds = g_programs = g_dynamic_draws = 0;
@@ -1681,6 +1683,37 @@ static void view_update(void)
 enum { RIDER_NOT_STARTED, RIDER_DRAWING, RIDER_DONE };
 
 static int g_rider_run;
+
+/*
+ What the draw-order checks decided this frame, logged once it changes and holds for 30 frames.
+ Hide HUD and Hide Cursor need a race frame whose 2D overlay has fewer than HUD_MENU_BOXES
+ 1x1 boxes, and goggles need the rider trimmed for first person.
+*/
+static void view_state_log(void)
+{
+	static int current = -1, logged = -1, flips;
+	static unsigned since;
+	int state = (g_shadow_frame ? 1 : 0) | (g_hud_phase ? 2 : 0) | (g_hud_boxes >= HUD_MENU_BOXES ? 4 : 0) |
+		    (g_frame_trimmed ? 8 : 0);
+
+	if (state != current) {
+		current = state;
+		since = g_frame;
+		flips++;
+		return;
+	}
+	if (current == logged || g_frame - since < 30)
+		return;
+	if (g_hud_phase)
+		log_msg("view at frame %u: race frame %s, 2D overlay with %d boxes (%s), first person %s, %d changes since the last view line",
+			g_frame, g_shadow_frame ? "yes" : "no", g_hud_boxes,
+			g_hud_boxes >= HUD_MENU_BOXES ? "a menu" : "the race HUD", g_frame_trimmed ? "yes" : "no", flips - 1);
+	else
+		log_msg("view at frame %u: race frame %s, 2D overlay not reached, first person %s, %d changes since the last view line",
+			g_frame, g_shadow_frame ? "yes" : "no", g_frame_trimmed ? "yes" : "no", flips - 1);
+	logged = current;
+	flips = 1;
+}
 
 static void rigid_pose_commit(void)
 {
@@ -3655,7 +3688,15 @@ HOOK(void, glBindFramebuffer, (GLenum target, GLuint fb))
 
 HOOK(void, glFramebufferTexture2D, (GLenum target, GLenum attachment, GLenum textarget, GLuint tex, GLint level))
 {
-	log_msg("glFramebufferTexture2D fb=%u attachment=%x textarget=%x tex=%u level=%d", g_cur_fb, attachment, textarget, tex, level);
+	static unsigned logged;
+
+	/* The Linux game attaches a texture about once a frame, which would grow the log without end. */
+	if (logged < 20)
+		log_msg("glFramebufferTexture2D fb=%u attachment=%x textarget=%x tex=%u level=%d", g_cur_fb, attachment, textarget, tex, level);
+	else if (logged == 20)
+		log_msg("glFramebufferTexture2D: further calls aren't logged");
+	if (logged <= 20)
+		logged++;
 	real_glFramebufferTexture2D(target, attachment, textarget, tex, level);
 }
 
