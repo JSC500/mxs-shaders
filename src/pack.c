@@ -1,5 +1,5 @@
 /*
- Shader packs live in %LOCALAPPDATA%\mxs-shaders\shaderpacks\<name>.
+ Shader packs live in %LOCALAPPDATA%\MX Simulator\mxs-shaders\shaderpacks\<name>.
  A stage file is named after its role, e.g. terrain.fsh. The default pack is built
  into the DLL and any pack only holds what it changes: a file it doesn't have comes
  from the default pack, and one neither has means the game's own shader is used.

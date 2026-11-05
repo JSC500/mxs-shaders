@@ -4,10 +4,10 @@ A shader pack is a folder of GLSL files that replaces how the game looks. You do
 
 ## Quick start
 
-The paths below are for Windows. On Linux, `%LOCALAPPDATA%\mxs-shaders` is `~/.local/share/mxs-shaders`, and everything else is the same, packs included.
+The paths below are for Windows. On Linux, `%LOCALAPPDATA%\MX Simulator\mxs-shaders` is `~/.local/share/mxs-shaders`, and everything else is the same, packs included.
 
-1. Make a folder in `%LOCALAPPDATA%\mxs-shaders\shaderpacks`, for example `my-pack`.
-2. Set `pack=my-pack` and `debug=1` in `%LOCALAPPDATA%\mxs-shaders\mxs-shaders.ini` and restart the game.
+1. Make a folder in `%LOCALAPPDATA%\MX Simulator\mxs-shaders\shaderpacks`, for example `my-pack`.
+2. Set `pack=my-pack` and `debug=1` in `%LOCALAPPDATA%\MX Simulator\mxs-shaders\mxs-shaders.ini` and restart the game.
 3. Copy the file you want to change into your folder. They're in `default-pack.zip` on the Releases page, or in `shaderpacks/default` in this repository.
 4. Edit it, press **F8** in the game and click **Reload Current Shader**. The button only appears with `debug=1`.
 
@@ -15,9 +15,9 @@ A pack only needs the files it changes. Anything it doesn't have comes from the 
 
 To use a pack someone else made, put its folder in `shaderpacks`, set `pack=` to the folder's name, and restart. Set `pack=default` to go back. You can also pick a pack on the Shader Pack row of the F8 panel. It lists the folders in `shaderpacks` and switches straight away.
 
-If a shader doesn't compile, the mod keeps what was running and writes the error to `%LOCALAPPDATA%\mxs-shaders\mxs-shaders.log`.
+If a shader doesn't compile, the mod keeps what was running and writes the error to `%LOCALAPPDATA%\MX Simulator\mxs-shaders\mxs-shaders.log`.
 
-Set `debug=1` in `mxs-shaders.ini` to save the game's own shaders to `%LOCALAPPDATA%\mxs-shaders\shaders`. They show what each stage receives. Don't publish those files, they belong to the game.
+Set `debug=1` in `mxs-shaders.ini` to save the game's own shaders to `%LOCALAPPDATA%\MX Simulator\mxs-shaders\shaders`. They show what each stage receives. Don't publish those files, they belong to the game.
 
 Each pack keeps its own slider values. To start yours somewhere other than the mod's defaults, add a `settings.ini` with a `[settings]` section and the keys from the settings table in the README, such as `dof=0`. What a player sets in the game takes priority.
 

@@ -13,7 +13,7 @@ This project aims to bring improved visuals such as shadows from real time dynam
 - `shaderpacks/default/`: the default pack, built into the DLL by `scripts/gen_pack.ps1` (into the Linux library by `scripts/gen_pack.c`).
 - `shaderpacks/psx/`: an optional PS1 look. It isn't built in, it ships as `psx-pack.zip`.
 - `shaderpacks/iMotoWeatherPack/`: Deband, Daltonize and DisplayDepth translated from ReShade, run after the default lens. Their settings are constants in `reshade.glsl`. It isn't built in, it ships as `iMotoWeatherPack-pack.zip`. The release packs every folder in `shaderpacks/` as `<name>-pack.zip`.
-- `%LOCALAPPDATA%\mxs-shaders`: everything at runtime: `game\` (the dev copy of the game, if there is one), `mxs-shaders.ini`, `mxs-shaders.log`, `frames\`, `shaders\`, `riders\`, `shaderpacks\`.
+- `%LOCALAPPDATA%\MX Simulator\mxs-shaders`: everything at runtime: `game\` (the dev copy of the game, if there is one), `mxs-shaders.ini`, `mxs-shaders.log`, `frames\`, `shaders\`, `riders\`, `shaderpacks\`. Before, it was `%LOCALAPPDATA%\mxs-shaders`, which isn't read or copied any more: the user didn't want old settings carried over, since that can break existing installations. With `LOCALAPPDATA` pointed at a scratch folder, the log is in its `MX Simulator\mxs-shaders`.
 
 Only the repo's own code belongs here. Andre's MXS Effects is a closed, licensed ReShade add-on: its features can be rebuilt from what they're described to do, but don't decompile it or commit its files, or any other author's.
 
@@ -24,7 +24,7 @@ Run this from PowerShell in the repository root. There's no Python or `strings` 
 cmd /c "`"$PWD\build.bat`"" | Select-String -Pattern 'error|warning|Built'
 ```
 
-`build.bat` finds Visual Studio with the C++ tools through `vswhere`, and the `vswhere.exe` line in the output, from Visual Studio's own setup script, is harmless. It deploys the pack to `%LOCALAPPDATA%\mxs-shaders`, overwriting the deployed pack, and the DLL to the dev copy when there is one. Shader-only changes don't need a build: copy the file to `%LOCALAPPDATA%\mxs-shaders\shaderpacks\default`, and **Reload Current Shader** in the F8 panel, shown with `debug=1`, reloads it in a running game. Don't change the user's own `mxs-shaders.ini` values without saying so.
+`build.bat` finds Visual Studio with the C++ tools through `vswhere`, and the `vswhere.exe` line in the output, from Visual Studio's own setup script, is harmless. It deploys the pack to `%LOCALAPPDATA%\MX Simulator\mxs-shaders`, overwriting the deployed pack, and the DLL to the dev copy when there is one. Shader-only changes don't need a build: copy the file to `%LOCALAPPDATA%\MX Simulator\mxs-shaders\shaderpacks\default`, and **Reload Current Shader** in the F8 panel, shown with `debug=1`, reloads it in a running game. Don't change the user's own `mxs-shaders.ini` values without saying so.
 
 ## Testing with the user
 Test in the dev copy when there is one, because the default game folder needs admin. Without one, the game folder is the test install: ask before copying `build\opengl32.dll` into it, or let the user copy it. Most features need a person in the game, so:
@@ -36,7 +36,7 @@ Test in the dev copy when there is one, because the default game folder needs ad
 With no dev copy, set `$g` to the game folder instead.
 
 ```powershell
-$g="$env:LOCALAPPDATA\mxs-shaders\game"; $p=Start-Process -FilePath "$g\mx.exe" -WorkingDirectory $g -PassThru; $p.WaitForExit(); "exit $($p.ExitCode)"
+$g="$env:LOCALAPPDATA\MX Simulator\mxs-shaders\game"; $p=Start-Process -FilePath "$g\mx.exe" -WorkingDirectory $g -PassThru; $p.WaitForExit(); "exit $($p.ExitCode)"
 ```
 
 4. When it exits, read the log and captures, then report what the log proves and ask about what only the user can see.

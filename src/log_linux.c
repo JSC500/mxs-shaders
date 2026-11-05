@@ -1,6 +1,6 @@
 /*
  log_linux.c: log.c for the Linux build. Everything goes to $XDG_DATA_HOME/mxs-shaders,
- normally ~/.local/share/mxs-shaders, with the same layout as %LOCALAPPDATA%\mxs-shaders.
+ normally ~/.local/share/mxs-shaders, with the same layout as %LOCALAPPDATA%\MX Simulator\mxs-shaders.
 */
 #define _GNU_SOURCE
 #include "common.h"

@@ -23,7 +23,7 @@ The mod is one DLL. It doesn't change `mx.exe` or the game's memory, and it only
 
 The first person shadow only works properly after you have switched to 3rd person once (per model- afterwards it also works immediately). That's because in first person, only the riders arms are loaded. Once you switch to 3rd person, the mod caches all meshes.
 
-To uninstall, delete `opengl32.dll` from the game folder. To remove the settings too, delete `%LOCALAPPDATA%\mxs-shaders`.
+To uninstall, delete `opengl32.dll` from the game folder. To remove the settings too, delete `%LOCALAPPDATA%\MX Simulator\mxs-shaders`, and `%LOCALAPPDATA%\mxs-shaders` if an older version left it.
 
 ### Linux
 
@@ -46,7 +46,9 @@ To use another key, click **Panel Key** at the top of the panel and press the ne
 
 **Turn Shaders Off** at the bottom of the panel switches straight to the game's own look, and the same button switches back. The panel stays available, and the choice is kept for the next start. Borderless Window is the one thing that stays, since it's about the window and not the look.
 
-Settings are stored in `%LOCALAPPDATA%\mxs-shaders\mxs-shaders.ini` (on Linux `~/.local/share/mxs-shaders/mxs-shaders.ini`), which you can also edit by hand. The file is the same on both, so one can be copied to the other. For the strength settings, 0 is off.
+Settings are stored in `%LOCALAPPDATA%\MX Simulator\mxs-shaders\mxs-shaders.ini` (on Linux `~/.local/share/mxs-shaders/mxs-shaders.ini`), which you can also edit by hand. The file is the same on both, so one can be copied to the other. For the strength settings, 0 is off.
+
+Older versions kept everything in `%LOCALAPPDATA%\mxs-shaders`. Newer ones don't read it and start with fresh settings, so put any shader packs you added into the new folder and delete the old one.
 
 Each shader pack remembers its own sliders. In the file, the default pack's are in `[mxs-shaders]` with the other settings, and another pack's are in a section of their own, such as `[pack psx]`.
 
@@ -80,13 +82,13 @@ After editing the file by hand, restart the game to apply your changes.
 
 ### PSX look
 
-For a PS1 style, download `psx-pack.zip` from the Releases page and extract the `psx` folder into `%LOCALAPPDATA%\mxs-shaders\shaderpacks`. Then pick `psx` on the Shader Pack row of the F8 panel, and pick `default` to go back.
+For a PS1 style, download `psx-pack.zip` from the Releases page and extract the `psx` folder into `%LOCALAPPDATA%\MX Simulator\mxs-shaders\shaderpacks`. Then pick `psx` on the Shader Pack row of the F8 panel, and pick `default` to go back.
 
 ![The PSX look](example%20screenshots/psx.webp)
 
 ### iMoto Weather Pack
 
-The default look with Deband, Daltonize and DisplayDepth translated from ReShade. Download `iMotoWeatherPack-pack.zip` from the Releases page, extract the `iMotoWeatherPack` folder into `%LOCALAPPDATA%\mxs-shaders\shaderpacks`, and pick it on the Shader Pack row of the F8 panel.
+The default look with Deband, Daltonize and DisplayDepth translated from ReShade. Download `iMotoWeatherPack-pack.zip` from the Releases page, extract the `iMotoWeatherPack` folder into `%LOCALAPPDATA%\MX Simulator\mxs-shaders\shaderpacks`, and pick it on the Shader Pack row of the F8 panel.
 
 ### Borderless fullscreen to avoid black screen when alt-tabbing (Windows)
 
@@ -94,7 +96,7 @@ Set the game's video mode to windowed. With `borderless` on, which is the defaul
 
 ## Shader packs
 
-The look comes from a shader pack. To use another one, put its folder in `%LOCALAPPDATA%\mxs-shaders\shaderpacks` (on Linux `~/.local/share/mxs-shaders/shaderpacks`), set `pack=` to the folder's name in `mxs-shaders.ini`, and restart the game. Set `pack=default` to go back.
+The look comes from a shader pack. To use another one, put its folder in `%LOCALAPPDATA%\MX Simulator\mxs-shaders\shaderpacks` (on Linux `~/.local/share/mxs-shaders/shaderpacks`), set `pack=` to the folder's name in `mxs-shaders.ini`, and restart the game. Set `pack=default` to go back.
 
 To write your own, see [docs/shader-packs.md](docs/shader-packs.md).
 

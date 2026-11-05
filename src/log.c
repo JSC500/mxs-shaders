@@ -9,8 +9,11 @@ void log_init(void)
 {
 	wchar_t path[MAX_PATH], sub[MAX_PATH];
 
+	/* Beside the game's own data. MX Simulator makes that folder, but a fresh install may not have yet. */
 	if (!GetEnvironmentVariableW(L"LOCALAPPDATA", g_dir, MAX_PATH - 64))
 		GetTempPathW(MAX_PATH - 64, g_dir);
+	wcscat_s(g_dir, MAX_PATH, L"\\MX Simulator");
+	CreateDirectoryW(g_dir, NULL);
 	wcscat_s(g_dir, MAX_PATH, L"\\mxs-shaders");
 	CreateDirectoryW(g_dir, NULL);
 
