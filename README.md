@@ -25,6 +25,19 @@ The first person shadow only works properly after you have switched to 3rd perso
 
 To uninstall, delete `opengl32.dll` from the game folder. To remove the settings too, delete `%LOCALAPPDATA%\mxs-shaders`.
 
+### Linux
+
+For the game's native Linux build, without Wine or Proton. This build is new, so if something looks wrong, please report it with `~/.local/share/mxs-shaders/mxs-shaders.log`.
+
+1. Download `libmxs-shaders.so` and `mxs-shaders.sh` from the [Releases](../../releases) page, or build them (see [Building](#building)).
+2. Copy both into your game folder, next to `mx` and `mxbin`, and make the script executable: `chmod +x mxs-shaders.sh`.3. Start the game with `./mxs-shaders.sh` instead of `./mx`. A desktop shortcut can point at the script too.
+
+`./mx` still starts the game without the mod. The script loads the library through a link in `~/.local/share/mxs-shaders`, because `LD_PRELOAD` can't handle the space in a folder called `MX Simulator`. If the script isn't in the game folder, tell it where the game is: `MX_HOME="/path/to/MX Simulator" ./mxs-shaders.sh`.
+
+The F8 panel needs FreeType and a bold italic font: DejaVu Sans, Liberation Sans or Noto Sans, which most distributions install. Another font can go in `~/.local/share/mxs-shaders/fonts/panel.ttf`. Borderless Window isn't needed on Linux, where fullscreen doesn't change the display mode, so it isn't in the panel.
+
+To uninstall, delete the two files from the game folder. To remove the settings too, delete `~/.local/share/mxs-shaders`.
+
 ## Settings
 
 Press **F8** in the game to open the settings panel. Changes apply straight away and are saved automatically, except those marked with a red `*`, which need a restart. It works best in a menu or while paused.
@@ -33,7 +46,7 @@ To use another key, click **Panel Key** at the top of the panel and press the ne
 
 **Turn Shaders Off** at the bottom of the panel switches straight to the game's own look, and the same button switches back. The panel stays available, and the choice is kept for the next start. Borderless Window is the one thing that stays, since it's about the window and not the look.
 
-Settings are stored in `%LOCALAPPDATA%\mxs-shaders\mxs-shaders.ini`, which you can also edit by hand. For the strength settings, 0 is off.
+Settings are stored in `%LOCALAPPDATA%\mxs-shaders\mxs-shaders.ini` (on Linux `~/.local/share/mxs-shaders/mxs-shaders.ini`), which you can also edit by hand. The file is the same on both, so one can be copied to the other. For the strength settings, 0 is off.
 
 Each shader pack remembers its own sliders. In the file, the default pack's are in `[mxs-shaders]` with the other settings, and another pack's are in a section of their own, such as `[pack psx]`.
 
@@ -56,7 +69,7 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 | `borderless` | 1 | 0 or 1 | See below |
 | `hide_hud` | 0 | 0 or 1 | Hides the game's HUD in races, such as the tachometer, pitboard, messages and chat. Menus with rows stay visible |
 | `hide_cursor` | 1 | 0 or 1 | Hides the mouse cursor while riding. It comes back in menus |
-| `ui_key` | 119 | Windows virtual key code | The key that opens the panel, 119 is F8. Panel Key in the panel sets it for you |
+| `ui_key` | 119 | Windows virtual key code, on Linux too | The key that opens the panel, 119 is F8. Panel Key in the panel sets it for you |
 
 Only `shadow_range`'s lower limit of 20 is enforced, and `msaa` and `anisotropy` are capped at what your GPU supports. Higher values for the others still work but may look wrong. Above 500, shadows far away may go missing, and higher values make shadows softer.
 
@@ -72,19 +85,23 @@ For a PS1 style, download `psx-pack.zip` from the Releases page and extract the 
 
 The default look with Deband, Daltonize and DisplayDepth translated from ReShade. Download `iMotoWeatherPack-pack.zip` from the Releases page, extract the `iMotoWeatherPack` folder into `%LOCALAPPDATA%\mxs-shaders\shaderpacks`, and pick it on the Shader Pack row of the F8 panel.
 
-### Borderless fullscreen to avoid black screen when alt-tabbing
+### Borderless fullscreen to avoid black screen when alt-tabbing (Windows)
 
 Set the game's video mode to windowed. With `borderless` on, which is the default, the window then covers the whole screen and the monitor stays on. Set it to 0 for a normal window.
 
 ## Shader packs
 
-The look comes from a shader pack. To use another one, put its folder in `%LOCALAPPDATA%\mxs-shaders\shaderpacks`, set `pack=` to the folder's name in `mxs-shaders.ini`, and restart the game. Set `pack=default` to go back.
+The look comes from a shader pack. To use another one, put its folder in `%LOCALAPPDATA%\mxs-shaders\shaderpacks` (on Linux `~/.local/share/mxs-shaders/shaderpacks`), set `pack=` to the folder's name in `mxs-shaders.ini`, and restart the game. Set `pack=default` to go back.
 
 To write your own, see [docs/shader-packs.md](docs/shader-packs.md).
 
 ## Building
 
-Needs Visual Studio 2022 or its Build Tools with the C++ workload. Run `build.bat` to get `build\opengl32.dll`. Set `debug=1` in `mxs-shaders.ini` for frame captures with **F9**, shader dumps, GL error logging and a **Reload Current Shader** button in the panel.
+Needs Visual Studio 2022 or its Build Tools with the C++ workload. Run `build.bat` to get `build\opengl32.dll`.
+
+On Linux, install gcc, make and the X11 and FreeType headers (Debian and Ubuntu: `sudo apt install build-essential libx11-dev libfreetype-dev`), then run `make` to get `build/libmxs-shaders.so`. `make test` runs the tests against a stand-in for the game, and needs `xvfb`, `libxtst6` and ImageMagick.
+
+On either system, set `debug=1` in `mxs-shaders.ini` for frame captures with **F9**, shader dumps, GL error logging and a **Reload Current Shader** button in the panel.
 
 ## License
 

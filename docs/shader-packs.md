@@ -4,6 +4,8 @@ A shader pack is a folder of GLSL files that replaces how the game looks. You do
 
 ## Quick start
 
+The paths below are for Windows. On Linux, `%LOCALAPPDATA%\mxs-shaders` is `~/.local/share/mxs-shaders`, and everything else is the same, packs included.
+
 1. Make a folder in `%LOCALAPPDATA%\mxs-shaders\shaderpacks`, for example `my-pack`.
 2. Set `pack=my-pack` and `debug=1` in `%LOCALAPPDATA%\mxs-shaders\mxs-shaders.ini` and restart the game.
 3. Copy the file you want to change into your folder. They're in `default-pack.zip` on the Releases page, or in `shaderpacks/default` in this repository.
