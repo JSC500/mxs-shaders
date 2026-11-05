@@ -7,6 +7,8 @@ typedef char GLchar;
 
 #define SHADOW_UNIT 8	/* and the next one, kept bound during a race */
 
+enum { CLOUDS_OFF, CLOUDS_LOW, CLOUDS_MEDIUM, CLOUDS_HIGH };	/* the Cloud Quality setting */
+
 /* What post_run needs from the frame, and the game state it has to put back. */
 typedef struct {
 	GLuint scene_fbo;
@@ -18,6 +20,10 @@ typedef struct {
 	const float *moon_world;
 	const float *direct_loss;	/* how much of the game's sun and sky light the time of day takes away */
 	const float *ambient_loss;
+	float cloud_cover;		/* the setting, 1 at 100 */
+	int cloud_quality;		/* CLOUDS_ */
+	const float *cloud_light;	/* world space, toward what lights the clouds: the sun, or the moon at night */
+	int cloud_moon;
 	const float *view_up;		/* world up in view space */
 	const float *fog_color;		/* the game's, gamma encoded */
 	const float *shadow_matrix;	/* view space to wide shadow map, NULL without one */
@@ -47,4 +53,6 @@ void post_run(const post_state *s);
 void post_reload(void);
 BOOL post_ready(void);
 GLuint post_sky_texture(void);	/* the clear sky in every direction, 0 until there is one */
+/* The last clouds drawn, 0 if there are none, with the view they were drawn from: world to view, and x and y scale. */
+GLuint post_cloud_texture(float *view_from_world, float *scale);
 void post_context_lost(void);

@@ -54,6 +54,8 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 |---|---|---|---|
 | `enabled` | 1 | 0 or 1 | 0 shows the game's own look. Turn Shaders Off in the panel sets it for you |
 | `clock` | 0 | 0 to 96 | Time of Day in the panel. 0 is the track's own light, then quarter hours: 1 is 00:00, 49 is noon and 96 is 23:45. The sun rises around 05:00 and sets around 19:00, with twilight after, and at night a full moon lights the track and casts the shadows. Sun Turn turns the sun's whole path. It applies to every track, so change it when you change tracks. It replaces Day to Night and Sun Height, whose old values are carried over |
+| `cloud_cover` | 20 | 0 to 100 | Cloud Cover in the panel: how much of the sky is cloud, from clear through scattered clouds to a grey overcast. Rain, Storm and Snow cover the sky at least as much as an overcast. It replaces the old Cloudy weather, whose setting is carried over |
+| `cloud_quality` | 2 | 0 to 3 | Cloud Quality in the panel: Off, Low, Medium or High. Off draws flat clouds, which cost almost nothing. Low suits older GPUs, High is sharpest |
 | `fog` | 10 | 0 to 300 | Haze strength |
 | `parallax` | 200 | 0 to 200 | Depth of ruts and dirt |
 | `motion_blur` | 10 | 0 to 200 | Camera blur, 100 is a 1/60 second shutter |

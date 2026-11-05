@@ -223,11 +223,14 @@ uniform int u_weather;
 uniform float u_weather_amount;	/* the Weather Strength setting, 1 at 100 */
 uniform float u_wet;		/* 0 dry to 1 soaked, from Wet Ground or the rain */
 uniform sampler2D u_weather_noise;	/* four octaves of tiling value noise, made by the mod */
+uniform float u_cloud_cover;	/* the Cloud Cover setting, 1 at 100 */
 
-const int WEATHER_CLEAR = 0, WEATHER_CLOUDY = 1, WEATHER_RAIN = 2, WEATHER_STORM = 3, WEATHER_SNOW = 4;
+/* 1 was Cloudy, now Cloud Cover. Its number stays unused so old settings read the same. */
+const int WEATHER_CLEAR = 0, WEATHER_RAIN = 2, WEATHER_STORM = 3, WEATHER_SNOW = 4;
 const vec2 WIND = vec2(9.0, 4.0);	/* game units per second */
-const float CLOUD_HEIGHT = 1200.0;
-const float CLOUD_SIZE = 900.0;		/* across a typical cloud */
+const float CLOUD_BASE = 2500.0, CLOUD_TOP = 5000.0;	/* the cumulus layer, game units */
+const float CLOUD_HEIGHT = 3200.0;	/* where its shadows and the flat clouds are worked out */
+const float CLOUD_SIZE = 2500.0;	/* across a typical cloud */
 const float CLOUD_OPACITY = 0.85;	/* of the sun a thick cloud takes away */
 const float PUDDLE_SIZE = 18.0;
 const float SNOW_PATCH_SIZE = 40.0;
@@ -266,24 +269,27 @@ vec3 to_world_dir(vec3 view_dir)
 	return mat3(u_world_from_view) * view_dir;
 }
 
-/* How much of the sky the clouds cover. */
+/* How much of the sky the clouds cover. Rain and snow need at least an overcast. */
 float cloud_cover()
 {
-	if (u_weather == WEATHER_CLEAR)
-		return 0.0;
-	if (u_weather == WEATHER_CLOUDY)
-		return 0.25 + 0.45 * u_weather_amount;
-	return 0.75 + 0.25 * u_weather_amount;
+	if (u_weather >= WEATHER_RAIN)
+		return max(u_cloud_cover, 0.75 + 0.25 * u_weather_amount);
+	return u_cloud_cover;
 }
 
-/* How thick the cloud is at a point of its layer, 0 in clear sky. */
+/*
+ How thick the cloud is at a point of its layer, 0 in clear sky. Two scales of noise at
+ odd sizes, so the pattern doesn't visibly repeat across the sky, and a soft edge.
+*/
 float cloud_density(vec2 layer)
 {
-	float cover = cloud_cover();
+	float cover = cloud_cover(), field;
+	vec2 p = (layer + WIND * u_time) / CLOUD_SIZE;
 
 	if (cover <= 0.0)
 		return 0.0;
-	return smoothstep(1.0 - cover, 1.0 - cover + 0.25, weather_fbm((layer + WIND * u_time) / CLOUD_SIZE));
+	field = weather_fbm(p) * 0.65 + weather_fbm(p * 0.183 + vec2(3.7, 1.3)) * 0.35;
+	return smoothstep(1.0 - cover, 1.0 - cover + 0.35, field);
 }
 
 /* The sun's world direction, pointing up whichever way the game's vector runs. */
@@ -294,16 +300,22 @@ vec3 sun_world(vec3 view_sun)
 	return sun.y < 0.0 ? -sun : sun;
 }
 
+/* How much of the sun a thick cloud takes away. An overcast closes into one sheet that lets almost none through. */
+float cloud_opacity()
+{
+	return mix(CLOUD_OPACITY, 0.98, smoothstep(0.7, 1.0, cloud_cover()));
+}
+
 /* The sunlight a point gets through the clouds between it and the sun. */
 float cloud_shadow(vec3 view_pos, vec3 view_sun)
 {
 	vec3 p, sun;
 
-	if (u_weather == WEATHER_CLEAR)
+	if (cloud_cover() <= 0.0)
 		return 1.0;
 	p = to_world(view_pos);
 	sun = sun_world(view_sun);
-	return 1.0 - cloud_density(p.xz + sun.xz / max(sun.y, 0.1) * (CLOUD_HEIGHT - p.y)) * CLOUD_OPACITY;
+	return 1.0 - cloud_density(p.xz + sun.xz / max(sun.y, 0.1) * (CLOUD_HEIGHT - p.y)) * cloud_opacity();
 }
 
 /* The same for the sun itself, seen from the camera. */
@@ -312,10 +324,12 @@ float sun_through_clouds(vec3 view_sun)
 	return cloud_shadow(vec3(0.0), view_sun);
 }
 
-/* How grey and dull the day is, 0 under a clear or broken sky. */
+/* How grey and dull the day is, 0 under a clear or broken sky: rain, or a full overcast. */
 float weather_gloom()
 {
-	return u_weather >= WEATHER_RAIN ? 0.5 + 0.5 * u_weather_amount : 0.0;
+	float overcast = smoothstep(0.8, 1.0, u_cloud_cover) * 0.6;
+
+	return max(u_weather >= WEATHER_RAIN ? 0.5 + 0.5 * u_weather_amount : 0.0, overcast);
 }
 
 /* Water on flat ground, in patches fixed to the track. flatness is the ground normal's height. */

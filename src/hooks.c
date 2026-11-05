@@ -246,7 +246,8 @@ static BOOL g_reload_requested, g_enabled_changed;	/* from the panel, done at th
 static int g_cfg_fog, g_cfg_parallax, g_cfg_motion_blur, g_cfg_dof, g_cfg_saturation, g_cfg_contrast, g_cfg_split_tone;
 static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_clock, g_cfg_ui_key, g_cfg_enabled;
 static int g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_bloom, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_turn;
-static int g_cfg_weather, g_cfg_weather_amount, g_cfg_wet;
+static int g_cfg_weather, g_cfg_weather_amount, g_cfg_wet, g_cfg_cloud_cover, g_cfg_cloud_quality;
+static GLint g_loc_cloud_cover[MAX_IDS];
 static float g_weather_time;	/* seconds since the first frame, for drifting clouds and falling rain */
 
 typedef void (WINAPI *glGenObjects_t)(GLsizei, GLuint *);
@@ -723,6 +724,7 @@ static const float g_twilight_sky_light[3] = { 0.72f, 0.84f, 1.15f };	/* the sky
 static float g_sun_world[3] = { 0.0f, 1.0f, 0.0f };	/* toward the sun, below the horizon too */
 static float g_moon_world[3] = { 0.0f, -1.0f, 0.0f };
 static float g_night;	/* 0 by day, 1 when twilight has gone */
+static BOOL g_light_is_moon;	/* the game's light has become the moon's */
 static float g_direct_loss[3], g_ambient_loss[3];
 
 static BOOL clock_set(void)
@@ -838,6 +840,7 @@ static void sun_effective(float *out, const float *in, const float *inv_view)
 			g_direct_loss[i] = g_ambient_loss[i] = 0.0f;
 		}
 		g_night = 0.0f;
+		g_light_is_moon = FALSE;
 		if (!sun_moved()) {
 			memcpy(out, in, 3 * sizeof *out);
 			return;
@@ -860,7 +863,8 @@ static void sun_effective(float *out, const float *in, const float *inv_view)
 			g_direct_loss[i] = 1.0f - direct[i];
 			g_ambient_loss[i] = 1.0f - ambient[i];
 		}
-		memcpy(light, sun_height > MOON_TAKES_OVER ? g_sun_world : g_moon_world, sizeof light);
+		g_light_is_moon = sun_height <= MOON_TAKES_OVER;
+		memcpy(light, g_light_is_moon ? g_moon_world : g_sun_world, sizeof light);
 		raise_to(light, SUN_MIN_HEIGHT);
 	}
 
@@ -1172,6 +1176,8 @@ static void weather_apply(const float *inv_view)
 			my_glProgramUniform1i(p, g_loc_weather[p], g_cfg_weather);
 		if (g_loc_weather_amount[p] >= 0)
 			my_glProgramUniform1f(p, g_loc_weather_amount[p], g_cfg_weather_amount / 100.0f);
+		if (g_loc_cloud_cover[p] >= 0)
+			my_glProgramUniform1f(p, g_loc_cloud_cover[p], g_cfg_cloud_cover / 100.0f);
 		if (g_loc_wet[p] >= 0)
 			my_glProgramUniform1f(p, g_loc_wet[p], weather_wet());
 		if (g_loc_weather_noise[p] >= 0)
@@ -2213,7 +2219,8 @@ static float g_sky_line[SKY_MASK_BINS];	/* sine of the skyline's elevation */
 static GLuint g_sky_mask;
 static BOOL g_sky_mask_valid;
 static int g_cfg_sky_mask_view;
-static GLint g_loc_sky_face_on = -1, g_loc_sky_face = -1, g_loc_sky_sun = -1;
+static GLint g_loc_sky_face_on = -1, g_loc_sky_face = -1, g_loc_sky_sun = -1, g_loc_cloud_view = -1, g_loc_cloud_scale = -1;
+#define CLOUDS_UNIT 21	/* post.c's latest clouds */
 
 /* Reads one float attribute of the sprite program's vertices start to start + 3. */
 static BOOL sky_attr_read(const char *name, GLuint start, float out[4][4])
@@ -2406,8 +2413,9 @@ static void sky_context_lost(void)
 /* Tells sprite.fsh where the face about to be drawn sits, or that it isn't one to draw over. */
 static void sky_face_send(const sky_face *f)
 {
-	GLuint lut = post_sky_texture();
+	GLuint lut = post_sky_texture(), clouds;
 	BOOL on = f && f->placed && g_sky_mask_valid && lut && g_cfg_enabled;
+	float cloud_view[16], cloud_scale[3] = { 0.0f, 0.0f, 0.0f };
 
 	if (!my_glProgramUniform1i || g_loc_sky_face_on < 0)
 		return;
@@ -2416,6 +2424,16 @@ static void sky_face_send(const sky_face *f)
 		return;
 	my_glProgramUniformMatrix4fv(g_sprite_prog, g_loc_sky_face, 1, 0, f->place);
 	my_glProgramUniform3fv(g_sprite_prog, g_loc_sky_sun, 1, g_sun_world);
+
+	/* Last frame's clouds, found by direction. */
+	clouds = post_cloud_texture(cloud_view, cloud_scale);
+	cloud_scale[2] = clouds ? 1.0f : 0.0f;
+	my_glProgramUniform3fv(g_sprite_prog, g_loc_cloud_scale, 1, cloud_scale);
+	if (clouds) {
+		my_glProgramUniformMatrix4fv(g_sprite_prog, g_loc_cloud_view, 1, 0, cloud_view);
+		real_glActiveTexture(GL_TEXTURE0 + CLOUDS_UNIT);
+		real_glBindTexture(GL_TEXTURE_2D, clouds);
+	}
 	real_glActiveTexture(GL_TEXTURE0 + SKY_LUT_UNIT);
 	real_glBindTexture(GL_TEXTURE_2D, lut);
 	real_glActiveTexture(GL_TEXTURE0 + SKY_MASK_UNIT);
@@ -2593,6 +2611,10 @@ static void run_post(void)
 	s.moon_world = g_moon_world;
 	s.direct_loss = g_direct_loss;
 	s.ambient_loss = g_ambient_loss;
+	s.cloud_cover = g_cfg_cloud_cover / 100.0f;
+	s.cloud_quality = g_cfg_cloud_quality;
+	s.cloud_light = g_light_is_moon ? g_moon_world : g_sun_world;
+	s.cloud_moon = g_light_is_moon;
 	s.view_up = g_view_up;
 	s.fog_color = fog && fog->data ? fog->data : default_fog;
 	s.shadow_matrix = g_shadow_receiver_valid ? g_shadow_receiver : NULL;
@@ -2718,8 +2740,11 @@ static const int g_shadow_sizes[] = { 1024, 2048, 4096, 8192 };
 static const char *const g_shadow_names[] = { "Low", "Medium", "High", "Ultra" };
 static const int g_msaa_levels[] = { 0, 2, 4, 8 };
 static const int g_aniso_levels[] = { 1, 2, 4, 8, 16 };
-static const int g_weather_kinds[] = { WEATHER_CLEAR, WEATHER_CLOUDY, WEATHER_RAIN, WEATHER_STORM, WEATHER_SNOW };
-static const char *const g_weather_names[] = { "Clear", "Cloudy", "Rain", "Storm", "Snow" };
+/* Cloudy became Cloud Cover, its number stays unused so old ini files read the same. */
+static const int g_weather_kinds[] = { WEATHER_CLEAR, WEATHER_RAIN, WEATHER_STORM, WEATHER_SNOW };
+static const char *const g_weather_names[] = { "None", "Rain", "Storm", "Snow" };
+static const int g_cloud_qualities[] = { CLOUDS_OFF, CLOUDS_LOW, CLOUDS_MEDIUM, CLOUDS_HIGH };
+static const char *const g_cloud_quality_names[] = { "Off", "Low", "Medium", "High" };
 
 #define SLIDER(tab, label, key, var, lo, hi, step) { label, key, UI_SLIDER, &var, lo, hi, step, NULL, 0, FALSE, NULL, tab }
 #define CHOICE(tab, label, key, var, list) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], TRUE, NULL, tab }
@@ -2744,6 +2769,7 @@ static const ui_item g_ui_items[] = {
 	CLOCK_SLIDER(UI_TAB_WEATHER, "Time of Day", L"clock", g_cfg_clock, CLOCK_TRACK, CLOCK_STEPS),
 	NAMED_CHOICE(UI_TAB_WEATHER, "Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names, FALSE),
 	SLIDER(UI_TAB_WEATHER, "Weather Strength", L"weather_amount", g_cfg_weather_amount, 0, 100, 5),
+	SLIDER(UI_TAB_WEATHER, "Cloud Cover", L"cloud_cover", g_cfg_cloud_cover, 0, 100, 5),
 	SLIDER(UI_TAB_WEATHER, "Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
 	SLIDER(UI_TAB_WEATHER, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
 	SLIDER(UI_TAB_WEATHER, "Shadow Distance", L"shadow_range", g_cfg_shadow_range, 20, 500, 10),
@@ -2751,6 +2777,7 @@ static const ui_item g_ui_items[] = {
 	TOGGLE(UI_TAB_DISPLAY, "Hide Game HUD", L"hide_hud", g_cfg_hide_hud, FALSE),
 	TOGGLE(UI_TAB_DISPLAY, "Hide Cursor in Race", L"hide_cursor", g_cfg_hide_cursor, FALSE),
 	NAMED_CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes, g_shadow_names, TRUE),
+	NAMED_CHOICE(UI_TAB_DISPLAY, "Cloud Quality", L"cloud_quality", g_cfg_cloud_quality, g_cloud_qualities, g_cloud_quality_names, FALSE),
 	CHOICE(UI_TAB_DISPLAY, "Antialiasing", L"msaa", g_cfg_msaa, g_msaa_levels),
 	CHOICE(UI_TAB_DISPLAY, "Texture Filtering", L"anisotropy", g_cfg_aniso, g_aniso_levels),
 #ifdef _WIN32
@@ -2946,6 +2973,8 @@ static void context_ready(HDC dc)
 	if (g_cfg_post && g_fbo_samples > 1)
 		post_init(real_wglGetProcAddress);
 	ui_init(real_wglGetProcAddress, g_ui_items, sizeof g_ui_items / sizeof g_ui_items[0]);
+	/* Setting up binds textures on units of the mod's own. The game binds its own wherever it left the unit. */
+	real_glActiveTexture(g_active_unit);
 }
 
 static void apply_aniso(GLenum target, GLint filter)
@@ -3487,6 +3516,7 @@ static void program_refresh(GLuint program)
 		g_loc_time[program] = real_glGetUniformLocation(program, "u_time");
 		g_loc_weather[program] = real_glGetUniformLocation(program, "u_weather");
 		g_loc_weather_amount[program] = real_glGetUniformLocation(program, "u_weather_amount");
+		g_loc_cloud_cover[program] = real_glGetUniformLocation(program, "u_cloud_cover");
 		g_loc_wet[program] = real_glGetUniformLocation(program, "u_wet");
 		g_loc_weather_noise[program] = real_glGetUniformLocation(program, "u_weather_noise");
 
@@ -3503,7 +3533,10 @@ static void program_refresh(GLuint program)
 			g_loc_sky_face_on = real_glGetUniformLocation(program, "u_sky_face_on");
 			g_loc_sky_face = real_glGetUniformLocation(program, "u_sky_face");
 			g_loc_sky_sun = real_glGetUniformLocation(program, "u_sky_sun");
+			g_loc_cloud_view = real_glGetUniformLocation(program, "u_cloud_view");
+			g_loc_cloud_scale = real_glGetUniformLocation(program, "u_cloud_scale");
 			if (my_glProgramUniform1i) {
+				my_glProgramUniform1i(program, real_glGetUniformLocation(program, "u_clouds"), CLOUDS_UNIT);
 				my_glProgramUniform1i(program, real_glGetUniformLocation(program, "u_sky"), SKY_LUT_UNIT);
 				my_glProgramUniform1i(program, real_glGetUniformLocation(program, "u_sky_mask"), SKY_MASK_UNIT);
 			}
@@ -3707,6 +3740,16 @@ static void load_live_settings(void)
 	g_cfg_goggles = ini_int(L"goggles", 0);
 	g_cfg_weather = min(max(ini_int(L"weather", WEATHER_CLEAR), WEATHER_CLEAR), WEATHER_SNOW);
 	g_cfg_weather_amount = pack_int(L"weather_amount", 60);
+	/* Cloudy is Cloud Cover now: as much cloud as Cloudy gave, and no rain. */
+	g_cfg_cloud_cover = min(pack_int(L"cloud_cover", g_cfg_weather == WEATHER_CLOUDY ? 25 + g_cfg_weather_amount * 45 / 100 : 20), 100);
+	if (g_cfg_weather == WEATHER_CLOUDY) {
+		wchar_t path[MAX_PATH];
+
+		g_cfg_weather = WEATHER_CLEAR;
+		log_path(path, L"mxs-shaders.ini");
+		WritePrivateProfileStringW(L"mxs-shaders", L"weather", L"0", path);
+	}
+	g_cfg_cloud_quality = min(max(ini_int(L"cloud_quality", CLOUDS_MEDIUM), CLOUDS_OFF), CLOUDS_HIGH);
 	g_cfg_wet = pack_int(L"wet", 0);
 	g_cfg_hide_hud = ini_int(L"hide_hud", 0);
 	g_cfg_hide_cursor = ini_int(L"hide_cursor", 1);

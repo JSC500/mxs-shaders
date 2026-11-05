@@ -48,6 +48,8 @@ These full-screen passes run in order after the world is drawn. To skip an effec
 | `post_shafts.fsh` | Sun shafts, at half resolution, blurred by `post_ao_blur.fsh` |
 | `post_bloom_down.fsh`, `post_bloom_up.fsh` | Bloom |
 | `post_exposure.fsh` | Brightness in red and focus distance in green, 1×1 pixel |
+| `post_sky.fsh` | The clear sky in every direction, 256×128, from `sky.glsl`. `sprite.fsh` draws it in the next frame's skybox |
+| `post_clouds.fsh` | Volumetric clouds for a view a little wider than the screen, at the Cloud Quality's size, blended with the last frame. Light in rgb, how much of the sky behind shows in alpha. `sprite.fsh` draws them in the next frame's skybox |
 | `post_final.fsh` | Combines occlusion, atmosphere and bloom, still in linear light |
 | `post_lens.fsh` | Motion blur, depth of field, tone mapping and grading |
 
@@ -67,6 +69,8 @@ These uniforms only need declaring to use them.
 | `u_night` | world shaders, `post_ao.fsh`, `post_final.fsh`, `post_lens.fsh` | 0 by day, rising through twilight to 1 when the sun is 12 degrees down, from the Time of Day setting. For stars and the like: the shadow maps keep running at night, lit by the moon |
 | `u_direct_loss`, `u_ambient_loss` | world shaders, `post_final.fsh` | How much of the game's sun and sky light the Time of Day takes away, per colour. 0 leaves the game's light. `common.glsl`'s `sun_boost()`, `light_tint()` and `sky_light()` apply them, so a pack that uses those gets dusk and night for free |
 | `u_sky`, `u_sky_mask`, `u_sky_sun` | sprite, `post_final.fsh` | The clear sky in every direction, the skybox's skyline, and the real sun in world space. `sky.glsl` reads them |
+| `u_cloud_cover` | world shaders, post passes | The Cloud Cover setting, 1 at 100. `common.glsl`'s `cloud_cover()` raises it to an overcast in rain and snow, and `cloud_density()` is the cloud field the cloud shadows and the volumetric clouds share |
+| `u_clouds`, `u_cloud_view`, `u_cloud_scale` | sprite | The last volumetric clouds, the view they were drawn from, and its scale, with z 0 when there are none. `sky.glsl`'s `clouds_at()` reads them by direction |
 | `u_sky_face_on`, `u_sky_face` | sprite | Set for each skybox face once the skybox has been read: the face's corners and texture span, so `sprite.fsh` can draw the atmosphere above the skyline |
 | `u_parallax` | terrain | The `parallax` setting |
 | `u_view_up` | model | World up in view space |

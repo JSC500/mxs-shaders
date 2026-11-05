@@ -158,10 +158,10 @@ float clouds_toward(vec3 d)
 {
 	vec3 p;
 
-	if (u_weather == WEATHER_CLEAR)
+	if (cloud_cover() <= 0.0)
 		return 1.0;
 	p = to_world(vec3(0.0));
-	return 1.0 - cloud_density(p.xz + d.xz / max(d.y, 0.1) * (CLOUD_HEIGHT - p.y)) * CLOUD_OPACITY;
+	return 1.0 - cloud_density(p.xz + d.xz / max(d.y, 0.1) * (CLOUD_HEIGHT - p.y)) * cloud_opacity();
 }
 
 /*
@@ -193,8 +193,29 @@ vec3 clear_sky(vec3 dir)
 {
 	vec3 sun = normalize(u_sky_sun);
 
+	/*
+	 The disc is a hundred times the sky's brightness, so the few percent a cloud lets
+	 through would still show it: the cloud field dims it too, under volumetric clouds as well.
+	*/
 	return texture(u_sky, sky_lut_uv(dir)).rgb * twilight_gain() + sun_disc(dir, sun) * clouds_toward(sun) +
 	       NIGHT_SKY * u_night;
+}
+
+/*
+ post_clouds.fsh's last frame, found by direction: the light the clouds add, and in
+ alpha how much of what's behind them shows. u_cloud_scale's z is 0 without clouds.
+*/
+uniform sampler2D u_clouds;
+uniform mat4 u_cloud_view;	/* world to the view they were drawn from */
+uniform vec3 u_cloud_scale;	/* and that view's x and y scale */
+
+vec4 clouds_at(vec3 dir)
+{
+	vec3 v = mat3(u_cloud_view) * dir;
+
+	if (u_cloud_scale.z == 0.0 || v.z > -0.01)
+		return vec4(0.0, 0.0, 0.0, 1.0);
+	return texture(u_clouds, clamp(v.xy * u_cloud_scale.xy / -v.z * 0.5 + 0.5, 0.0, 1.0));
 }
 
 /* The sun's disc, darkened toward its rim like the real one. */

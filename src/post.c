@@ -8,6 +8,7 @@
 */
 #include "common.h"
 #include "post.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -66,6 +67,23 @@
 #define UNIT_WEATHER_NOISE 18	/* hooks.c keeps the weather noise bound there */
 #define UNIT_SKY_MASK 19
 #define UNIT_SKY 20
+#define UNIT_CLOUDS 21		/* the latest clouds, for post_final.fsh and next frame's sprite.fsh */
+#define UNIT_CLOUD_NOISE 22
+
+/*
+ The clouds are drawn for a view this much wider than the screen, so next frame's sky
+ can still find them by direction after the camera turns.
+*/
+#define CLOUD_MARGIN 1.15f
+/*
+ Last frame's clouds are reused for the camera turning, not moving. A jump further than
+ this in one frame is a cut to another camera, and the clouds sit elsewhere from there.
+*/
+#define CLOUD_CUT 50.0f
+#define CLOUD_NOISE_SIZE 64
+#define GL_TEXTURE_3D 0x806F
+#define GL_TEXTURE_WRAP_R 0x8072
+#define GL_R8 0x8229
 
 #define SKY_LUT_W 256	/* match SKY_LUT_SIZE in sky.glsl */
 #define SKY_LUT_H 128
@@ -169,15 +187,27 @@ static GLint g_final_a, g_final_b, g_final_fx, g_final_fy, g_final_height, g_fin
 static GLint g_final_sharpen, g_final_bloom, g_final_sky_mask_on, g_final_sky_mask_view;
 static GLuint g_prog_sky, g_tex_sky, g_fbo_sky;	/* the clear sky in every direction */
 static BOOL g_sky_drawn;	/* g_tex_sky holds a sky, not nothing */
+
+static void (WINAPI *gl_TexImage3D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
+static GLuint g_prog_clouds, g_tex_clouds[2], g_fbo_clouds[2], g_tex_cloud_noise;
+static int g_cloud_w, g_cloud_h, g_cloud_write;
+static BOOL g_clouds_drawn;	/* g_tex_clouds[g_cloud_write] is a finished frame */
+static float g_cloud_view[16], g_cloud_scale[2];	/* what it was drawn from: world to view, x and y scale */
+static float g_cloud_camera[3];	/* and where the camera was */
+static unsigned g_cloud_frame;
+static GLint g_clouds_fx, g_clouds_fy, g_clouds_margin, g_clouds_steps, g_clouds_light_steps, g_clouds_history;
+static GLint g_clouds_light, g_clouds_moon, g_clouds_prev_view, g_clouds_frame, g_clouds_night, g_clouds_ambient_loss, g_clouds_sky_sun;
+static GLint g_final_clouds_on, g_final_cloud_margin;
+static void release_clouds(void);
 static GLint g_sky_sun, g_sky_night;
 static GLint g_final_sky_sun, g_final_moon, g_final_direct_loss, g_final_ambient_loss, g_final_light;
 
 /* The weather uniforms common.glsl declares, in the post programs that use them. */
 typedef struct {
-	GLint world, time, weather, amount, wet;
+	GLint world, time, weather, amount, wet, cover;
 } weather_locs;
 
-static weather_locs g_final_weather, g_lens_weather, g_sky_weather;
+static weather_locs g_final_weather, g_lens_weather, g_sky_weather, g_clouds_weather;
 
 static const char *const g_vs =
 	"#version 150\n"
@@ -249,6 +279,8 @@ static GLuint program(const char *file)
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_weather_noise"), UNIT_WEATHER_NOISE);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_sky_mask"), UNIT_SKY_MASK);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_sky"), UNIT_SKY);
+	gl_Uniform1i(gl_GetUniformLocation(p, "u_clouds"), UNIT_CLOUDS);
+	gl_Uniform1i(gl_GetUniformLocation(p, "u_cloud_noise"), UNIT_CLOUD_NOISE);
 	return p;
 }
 
@@ -261,6 +293,7 @@ static void weather_find(weather_locs *w, GLuint p)
 	w->weather = gl_GetUniformLocation(p, "u_weather");
 	w->amount = gl_GetUniformLocation(p, "u_weather_amount");
 	w->wet = gl_GetUniformLocation(p, "u_wet");
+	w->cover = gl_GetUniformLocation(p, "u_cloud_cover");
 }
 
 static void weather_send(const weather_locs *w, const post_state *s)
@@ -270,6 +303,77 @@ static void weather_send(const weather_locs *w, const post_state *s)
 	gl_Uniform1i(w->weather, s->weather);
 	gl_Uniform1f(w->amount, s->weather_amount);
 	gl_Uniform1f(w->wet, s->wet);
+	gl_Uniform1f(w->cover, s->cloud_cover);
+}
+
+static unsigned cell_hash(int x, int y, int z, unsigned seed)
+{
+	unsigned h = (unsigned)x * 374761393u + (unsigned)y * 668265263u + (unsigned)z * 2147483647u + seed * 2246822519u;
+
+	h = (h ^ (h >> 13)) * 1274126177u;
+	return h ^ (h >> 16);
+}
+
+/* Distance from p, in cells, to the nearest of one random point per cell, wrapping every cells. */
+static float worley(float px, float py, float pz, int cells, unsigned seed)
+{
+	int cx = (int)px, cy = (int)py, cz = (int)pz, x, y, z;
+	float best = 9.0f;
+
+	for (z = -1; z <= 1; z++)
+		for (y = -1; y <= 1; y++)
+			for (x = -1; x <= 1; x++) {
+				int gx = cx + x, gy = cy + y, gz = cz + z;
+				unsigned h = cell_hash((gx + cells) % cells, (gy + cells) % cells, (gz + cells) % cells, seed);
+				float dx = gx + (h & 255) / 255.0f - px;
+				float dy = gy + ((h >> 8) & 255) / 255.0f - py;
+				float dz = gz + ((h >> 16) & 255) / 255.0f - pz;
+				float d = dx * dx + dy * dy + dz * dz;
+
+				if (d < best)
+					best = d;
+			}
+	return (float)sqrt(best);
+}
+
+/*
+ Three octaves of tiling Worley noise, high in the gaps between round cells, so taking
+ it away from a cloud's edge leaves puffs. Made once, a march reads it many times a pixel.
+*/
+static void cloud_noise_create(void)
+{
+	static unsigned char voxels[CLOUD_NOISE_SIZE * CLOUD_NOISE_SIZE * CLOUD_NOISE_SIZE];
+	int x, y, z, n = CLOUD_NOISE_SIZE;
+
+	if (!gl_TexImage3D)
+		return;
+	for (z = 0; z < n; z++)
+		for (y = 0; y < n; y++)
+			for (x = 0; x < n; x++) {
+				float v = 0.0f, amp = 0.5f;
+				int o;
+
+				for (o = 0; o < 3; o++) {
+					int cells = 4 << o;
+					float s = (float)cells / n;
+
+					v += fminf(worley(x * s, y * s, z * s, cells, o), 1.0f) * amp;
+					amp *= 0.5f;
+				}
+				voxels[(z * n + y) * n + x] = (unsigned char)(fminf(v / 0.875f, 1.0f) * 255.0f + 0.5f);
+			}
+
+	gl_GenTextures(1, &g_tex_cloud_noise);
+	gl_ActiveTexture(GL_TEXTURE0 + UNIT_CLOUD_NOISE);
+	gl_BindTexture(GL_TEXTURE_3D, g_tex_cloud_noise);
+	gl_TexImage3D(GL_TEXTURE_3D, 0, GL_R8, n, n, n, 0, GL_RED, GL_UNSIGNED_BYTE, voxels);
+	gl_TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	gl_TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	gl_TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	gl_TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+	gl_TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_REPEAT);
+	/* Leaves the first unit selected, as the game expects at start. hooks.c puts back whatever the game chose. */
+	gl_ActiveTexture(GL_TEXTURE0);
 }
 
 #define LOAD(var, name) *(PROC *)&var = get_proc(name)
@@ -317,6 +421,7 @@ void post_init(PROC (WINAPI *get_proc)(LPCSTR))
 	LOAD(gl_CheckFramebufferStatus, "glCheckFramebufferStatus");
 	LOAD(gl_BlitFramebuffer, "glBlitFramebuffer");
 	LOAD(gl_DeleteProgram, "glDeleteProgram");
+	LOAD(gl_TexImage3D, "glTexImage3D");
 
 	if (!load_programs()) {
 		log_msg("post-processing off");
@@ -325,6 +430,7 @@ void post_init(PROC (WINAPI *get_proc)(LPCSTR))
 	}
 	gl_UseProgram(0);
 	gl_GenVertexArrays(1, &g_vao);
+	cloud_noise_create();
 	g_ready = TRUE;
 	log_msg("post-processing ready");
 }
@@ -332,9 +438,10 @@ void post_init(PROC (WINAPI *get_proc)(LPCSTR))
 /* All or nothing: a broken stage keeps every current program running. */
 static BOOL load_programs(void)
 {
-	GLuint fresh[9];
+	GLuint fresh[10];
 	int i;
 
+	fresh[9] = program("post_clouds.fsh");
 	fresh[0] = program("post_ao.fsh");
 	fresh[1] = program("post_ao_blur.fsh");
 	fresh[2] = program("post_bloom_down.fsh");
@@ -345,10 +452,10 @@ static BOOL load_programs(void)
 	fresh[7] = program("post_lens.fsh");
 	fresh[8] = program("post_sky.fsh");
 
-	for (i = 0; i < 9 && fresh[i]; i++)
+	for (i = 0; i < 10 && fresh[i]; i++)
 		;
-	if (i < 9) {
-		for (i = 0; i < 9; i++)
+	if (i < 10) {
+		for (i = 0; i < 10; i++)
 			if (fresh[i])
 				gl_DeleteProgram(fresh[i]);
 		return FALSE;
@@ -364,7 +471,23 @@ static BOOL load_programs(void)
 		gl_DeleteProgram(g_prog_shafts);
 		gl_DeleteProgram(g_prog_lens);
 		gl_DeleteProgram(g_prog_sky);
+		gl_DeleteProgram(g_prog_clouds);
 	}
+	g_prog_clouds = fresh[9];
+	g_clouds_fx = gl_GetUniformLocation(g_prog_clouds, "u_fx");
+	g_clouds_fy = gl_GetUniformLocation(g_prog_clouds, "u_fy");
+	g_clouds_margin = gl_GetUniformLocation(g_prog_clouds, "u_margin");
+	g_clouds_steps = gl_GetUniformLocation(g_prog_clouds, "u_steps");
+	g_clouds_light_steps = gl_GetUniformLocation(g_prog_clouds, "u_light_steps");
+	g_clouds_history = gl_GetUniformLocation(g_prog_clouds, "u_history");
+	g_clouds_light = gl_GetUniformLocation(g_prog_clouds, "u_cloud_light");
+	g_clouds_moon = gl_GetUniformLocation(g_prog_clouds, "u_cloud_moon");
+	g_clouds_prev_view = gl_GetUniformLocation(g_prog_clouds, "u_prev_view");
+	g_clouds_frame = gl_GetUniformLocation(g_prog_clouds, "u_frame");
+	g_clouds_night = gl_GetUniformLocation(g_prog_clouds, "u_night");
+	g_clouds_ambient_loss = gl_GetUniformLocation(g_prog_clouds, "u_ambient_loss");
+	g_clouds_sky_sun = gl_GetUniformLocation(g_prog_clouds, "u_sky_sun");
+	weather_find(&g_clouds_weather, g_prog_clouds);
 	g_prog_sky = fresh[8];
 	g_sky_sun = gl_GetUniformLocation(g_prog_sky, "u_sky_sun");
 	g_sky_night = gl_GetUniformLocation(g_prog_sky, "u_night");
@@ -425,6 +548,8 @@ static BOOL load_programs(void)
 	g_final_sky_sun = gl_GetUniformLocation(g_prog_final, "u_sky_sun");
 	g_final_moon = gl_GetUniformLocation(g_prog_final, "u_moon");
 	g_final_light = gl_GetUniformLocation(g_prog_final, "u_light");
+	g_final_clouds_on = gl_GetUniformLocation(g_prog_final, "u_clouds_on");
+	g_final_cloud_margin = gl_GetUniformLocation(g_prog_final, "u_cloud_margin");
 	g_final_direct_loss = gl_GetUniformLocation(g_prog_final, "u_direct_loss");
 	g_final_ambient_loss = gl_GetUniformLocation(g_prog_final, "u_ambient_loss");
 	weather_find(&g_final_weather, g_prog_final);
@@ -491,6 +616,7 @@ static void release_targets(void)
 	gl_DeleteTextures(1, &g_tex_comp);
 	gl_DeleteFramebuffers(1, &g_fbo_sky);
 	gl_DeleteTextures(1, &g_tex_sky);
+	release_clouds();
 	gl_DeleteTextures(1, &g_tex_color);
 	gl_DeleteTextures(1, &g_tex_depth);
 	gl_DeleteTextures(2, g_tex_ao);
@@ -683,6 +809,85 @@ static void pass_sky(const post_state *s)
 	g_sky_drawn = TRUE;
 }
 
+static void release_clouds(void)
+{
+	if (!g_fbo_clouds[0])
+		return;
+	gl_DeleteFramebuffers(2, g_fbo_clouds);
+	gl_DeleteTextures(2, g_tex_clouds);
+	g_fbo_clouds[0] = g_fbo_clouds[1] = 0;
+	g_cloud_w = g_cloud_h = 0;
+	g_clouds_drawn = FALSE;
+}
+
+/*
+ Clouds by Cloud Quality: the share of the screen they're drawn at, the steps through
+ the cumulus layer, and the steps toward the light for each.
+*/
+static void pass_clouds(const post_state *s)
+{
+	static const int divide[] = { 1, 4, 4, 2 }, steps[] = { 0, 24, 48, 64 }, light_steps[] = { 0, 4, 5, 6 };
+	int q = s->cloud_quality, w = g_w / divide[q], h = g_h / divide[q], read, i, j;
+	float dx = s->world_from_view[12] - g_cloud_camera[0], dy = s->world_from_view[13] - g_cloud_camera[1];
+	float dz = s->world_from_view[14] - g_cloud_camera[2];
+	BOOL history = g_clouds_drawn && dx * dx + dy * dy + dz * dz < CLOUD_CUT * CLOUD_CUT;
+
+	if (w != g_cloud_w || h != g_cloud_h) {
+		release_clouds();
+		gl_ActiveTexture(GL_TEXTURE0 + UNIT_SRC);
+		for (i = 0; i < 2; i++) {
+			g_tex_clouds[i] = new_texture(GL_RGBA16F, GL_RGBA, GL_FLOAT, w, h, GL_LINEAR);
+			g_fbo_clouds[i] = new_fbo(g_tex_clouds[i]);
+		}
+		g_cloud_w = w;
+		g_cloud_h = h;
+	}
+
+	read = g_cloud_write;
+	g_cloud_write ^= 1;
+	gl_BindFramebuffer(GL_FRAMEBUFFER, g_fbo_clouds[g_cloud_write]);
+	gl_Viewport(0, 0, w, h);
+	gl_UseProgram(g_prog_clouds);
+	gl_Uniform1f(g_clouds_fx, s->projection[0]);
+	gl_Uniform1f(g_clouds_fy, s->projection[5]);
+	gl_Uniform1f(g_clouds_margin, CLOUD_MARGIN);
+	gl_Uniform1i(g_clouds_steps, steps[q]);
+	gl_Uniform1i(g_clouds_light_steps, light_steps[q]);
+	gl_Uniform1i(g_clouds_history, history);
+	gl_Uniform3f(g_clouds_light, s->cloud_light[0], s->cloud_light[1], s->cloud_light[2]);
+	gl_Uniform1f(g_clouds_moon, s->cloud_moon ? 1.0f : 0.0f);
+	gl_UniformMatrix4fv(g_clouds_prev_view, 1, 0, g_cloud_view);
+	gl_Uniform1f(g_clouds_frame, (float)(g_cloud_frame++ % 64));
+	gl_Uniform1f(g_clouds_night, s->night);
+	gl_Uniform3f(g_clouds_ambient_loss, s->ambient_loss[0], s->ambient_loss[1], s->ambient_loss[2]);
+	gl_Uniform3f(g_clouds_sky_sun, s->sun_world[0], s->sun_world[1], s->sun_world[2]);
+	weather_send(&g_clouds_weather, s);
+	bind_unit(UNIT_CLOUDS, g_tex_clouds[read]);
+	fullscreen();
+	bind_unit(UNIT_CLOUDS, g_tex_clouds[g_cloud_write]);
+
+	/* The view they were drawn from: world to view is the camera's rotation, transposed. */
+	memset(g_cloud_view, 0, sizeof g_cloud_view);
+	for (i = 0; i < 3; i++)
+		for (j = 0; j < 3; j++)
+			g_cloud_view[j * 4 + i] = s->world_from_view[i * 4 + j];
+	g_cloud_view[15] = 1.0f;
+	memcpy(g_cloud_camera, &s->world_from_view[12], sizeof g_cloud_camera);
+	g_cloud_scale[0] = s->projection[0] / CLOUD_MARGIN;
+	g_cloud_scale[1] = s->projection[5] / CLOUD_MARGIN;
+	g_clouds_drawn = TRUE;
+}
+
+GLuint post_cloud_texture(float *view_from_world, float *scale)
+{
+	if (!g_ready || !g_clouds_drawn)
+		return 0;
+	memcpy(view_from_world, g_cloud_view, sizeof g_cloud_view);
+	scale[0] = g_cloud_scale[0];
+	scale[1] = g_cloud_scale[1];
+	return g_tex_clouds[g_cloud_write];
+}
+
 /* For sprite.fsh, which draws the sky at the start of the next frame. */
 GLuint post_sky_texture(void)
 {
@@ -729,6 +934,11 @@ void post_run(const post_state *s)
 	pass_exposure(s);
 	if (s->sky_mask)
 		pass_sky(s);
+	/* The clouds are drawn into the atmosphere, so they need the skybox read too. */
+	if (s->sky_mask && s->cloud_quality != CLOUDS_OFF)
+		pass_clouds(s);
+	else
+		release_clouds();
 
 	bind_unit(UNIT_AO, g_tex_ao[0]);
 	bind_unit(UNIT_BLOOM, g_tex_bloom[0]);
@@ -748,6 +958,8 @@ void post_run(const post_state *s)
 	gl_Uniform3f(g_final_sky_sun, s->sun_world[0], s->sun_world[1], s->sun_world[2]);
 	gl_Uniform3f(g_final_moon, s->moon_world[0], s->moon_world[1], s->moon_world[2]);
 	gl_Uniform3f(g_final_light, s->sun_view[0], s->sun_view[1], s->sun_view[2]);
+	gl_Uniform1i(g_final_clouds_on, g_clouds_drawn);
+	gl_Uniform1f(g_final_cloud_margin, CLOUD_MARGIN);
 	gl_Uniform3f(g_final_direct_loss, s->direct_loss[0], s->direct_loss[1], s->direct_loss[2]);
 	gl_Uniform3f(g_final_ambient_loss, s->ambient_loss[0], s->ambient_loss[1], s->ambient_loss[2]);
 	gl_Uniform3f(g_final_fog, s->fog_color[0], s->fog_color[1], s->fog_color[2]);
@@ -807,4 +1019,7 @@ void post_context_lost(void)
 	g_fbo_resolve = 0;
 	g_w = g_h = 0;
 	g_sky_drawn = FALSE;
+	g_fbo_clouds[0] = g_fbo_clouds[1] = 0;
+	g_cloud_w = g_cloud_h = 0;
+	g_clouds_drawn = FALSE;
 }

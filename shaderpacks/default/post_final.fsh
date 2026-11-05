@@ -15,6 +15,8 @@ uniform vec3 u_light;		/* the light the scene is shaded with, the moon at night,
 uniform int u_sky_mask_on;	/* 0 until the skybox has been read */
 uniform int u_sky_mask_view;	/* debugging: sky_mask_view in mxs-shaders.ini */
 uniform vec3 u_moon;		/* world space, below the horizon too */
+uniform int u_clouds_on;	/* post_clouds.fsh drew this frame's clouds, the sky already has them */
+uniform float u_cloud_margin;	/* how much wider than the screen they were drawn */
 
 #include "common.glsl"
 #include "sky.glsl"
@@ -127,9 +129,13 @@ vec3 weather_sky(vec3 c, vec3 dir, float flash, float slot, float open)
 	float night = smoothstep(0.5, 0.9, u_night) * smoothstep(0.0, 0.08, dir.y) * open;
 	vec3 camera = to_world(vec3(0.0));
 
-	if (dir.y > 0.0)
+	/* Volumetric clouds are in the sky already, what they let through hides what's behind. */
+	if (u_clouds_on != 0)
+		density = (1.0 - texture(u_clouds, (v_uv - 0.5) / u_cloud_margin + 0.5).a) * open;
+	else if (dir.y > 0.0)
 		density = cloud_density(camera.xz + dir.xz / max(dir.y, 0.02) * (CLOUD_HEIGHT - camera.y)) * smoothstep(0.0, 0.12, dir.y) * open;
-	c = mix(c, vec3(l) * mix(1.15, 0.4, gloom), density * 0.9);
+	if (u_clouds_on == 0)
+		c = mix(c, vec3(l) * mix(1.15, 0.4, gloom), density * 0.9);
 	c = mix(c, vec3(l) * mix(1.0, 0.55, gloom), gloom * 0.5);
 
 	if (night > 0.0) {
@@ -152,7 +158,7 @@ vec3 weather_sky(vec3 c, vec3 dir, float flash, float slot, float open)
 	}
 
 	if (flash > 0.0)
-		c += vec3(0.8, 0.85, 1.0) * lightning_bolt(dir, slot) * flash * 20.0 * open;
+		c += vec3(0.8, 0.85, 1.0) * lightning_bolt(dir, slot) * flash * 20.0 * open * (1.0 - density);
 	return c;
 }
 

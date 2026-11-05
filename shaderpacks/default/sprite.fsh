@@ -49,8 +49,10 @@ void main()
 			  (vec2(u_sky_face[2].w, u_sky_face[3].w) - vec2(u_sky_face[0].w, u_sky_face[1].w));
 		vec3 dir = normalize(mix(mix(u_sky_face[0].xyz, u_sky_face[1].xyz, st.x), mix(u_sky_face[2].xyz, u_sky_face[3].xyz, st.x), st.y));
 		vec3 painted = u_hdr != 0 ? scene_from_gamma(color.rgb) : color.rgb;
+		vec4 clouds = clouds_at(dir);
+		vec3 sky = clear_sky(dir) * clouds.a + clouds.rgb;
 
-		f_fragcolor = vec4(mix(painted * painted_light(), clear_sky(dir), skyline_open(dir)), color.a);
+		f_fragcolor = vec4(mix(painted * painted_light(), sky, skyline_open(dir)), color.a);
 		return;
 	}
 
