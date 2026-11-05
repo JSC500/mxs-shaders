@@ -29,6 +29,21 @@ vec3 sun_boost()
 	return SUN_BOOST * light_tint();
 }
 
+/*
+ With little direct light the sky still lights from one side: the glow where the sun
+ went down, or the moon. Without that, ruts and bumps vanish at dusk and at night. It
+ grows as the direct light fades, slopes toward the light brighten and away darken,
+ and flat ground keeps its light. light is the game's, the moon's at night.
+*/
+const float SKY_RELIEF = 0.5;
+
+float sky_relief(vec3 n, vec3 up, vec3 light)
+{
+	float amount = SKY_RELIEF * (1.0 - clamp(dot(light_tint(), vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0));
+
+	return max(1.0 + amount * 2.0 * (dot(n, light) - dot(up, light)), 0.2);
+}
+
 vec3 to_linear(vec3 c)
 {
 	return pow(max(c, vec3(0.0)), vec3(2.2));

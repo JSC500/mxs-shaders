@@ -64,7 +64,10 @@ These uniforms only need declaring to use them.
 | `u_shadow_matrix`, `u_shadow_near_matrix` | world shaders | View space to each map |
 | `u_shadow_on` | world shaders | Nonzero when the maps are valid |
 | `u_hdr` | world shaders | Nonzero in a race, where post-processing finishes the image. Otherwise the shader must tone map itself |
-| `u_night` | world shaders, `post_ao.fsh`, `post_final.fsh`, `post_lens.fsh` | The `time_of_day` setting, 1 at 100. Fade sun effects out with it. At 1 the shadow maps aren't drawn and `u_shadow_on` is 0 |
+| `u_night` | world shaders, `post_ao.fsh`, `post_final.fsh`, `post_lens.fsh` | 0 by day, rising through twilight to 1 when the sun is 12 degrees down, from the Time of Day setting. For stars and the like: the shadow maps keep running at night, lit by the moon |
+| `u_direct_loss`, `u_ambient_loss` | world shaders, `post_final.fsh` | How much of the game's sun and sky light the Time of Day takes away, per colour. 0 leaves the game's light. `common.glsl`'s `sun_boost()`, `light_tint()` and `sky_light()` apply them, so a pack that uses those gets dusk and night for free |
+| `u_sky`, `u_sky_mask`, `u_sky_sun` | sprite, `post_final.fsh` | The clear sky in every direction, the skybox's skyline, and the real sun in world space. `sky.glsl` reads them |
+| `u_sky_face_on`, `u_sky_face` | sprite | Set for each skybox face once the skybox has been read: the face's corners and texture span, so `sprite.fsh` can draw the atmosphere above the skyline |
 | `u_parallax` | terrain | The `parallax` setting |
 | `u_view_up` | model | World up in view space |
 | `u_sprite_mode` | sprite | 0 normal, 1 sky, 2 particle |

@@ -143,7 +143,7 @@ void main()
 	ndl = max(dot(n, light), 0.0) * sun_shadow(interp_viewer, n, 0.0) * cloud_shadow(interp_viewer, light);
 
 	/* Sky light falls off on surfaces facing away from the sky. */
-	ambient = sky_light(u_ambient.rgb) * (0.65 + 0.35 * dot(n, up));
+	ambient = sky_light(u_ambient.rgb) * (0.65 + 0.35 * dot(n, up)) * sky_relief(n, up, light);
 
 	lit = albedo * (ambient + to_linear(u_diffuse) * ndl * len * sun_boost());
 

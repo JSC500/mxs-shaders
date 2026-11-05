@@ -243,7 +243,8 @@ void main()
 	if (u_sharpen > 0.0)
 		c = sharpen(c);
 	c *= mix(1.0, occlusion.r, AO_STRENGTH);
-	c *= mix(1.0, occlusion.g, CONTACT_STRENGTH);
+	/* Contact shadows only take away direct light, which is gone after sunset. */
+	c *= mix(1.0, occlusion.g, CONTACT_STRENGTH * clamp(dot(light_tint(), vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0));
 	/* The atmosphere itself is already there: sprite.fsh drew it in the game's own sky. */
 	if (depth >= 1.0) {
 		c = weather_sky(c, dir, flash, slot, open);
