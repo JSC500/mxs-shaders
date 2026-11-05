@@ -120,6 +120,7 @@ static int g_pack_count;
 static const char *const g_tab_names[UI_TABS] = { "Look", "Sun & Weather", "Display" };
 static int g_tab;		/* the page showing, kept while the game runs */
 static int g_tab_rows;		/* the longest page, which sets the row height */
+static int g_top_rows;		/* rows under the shader pack, on every page */
 
 static const char *const g_vs =
 	"#version 150\n"
@@ -168,7 +169,12 @@ void ui_init(PROC (WINAPI *get_proc)(LPCSTR), const ui_item *items, int count)
 
 	g_items = items;
 	g_item_count = count;
+	g_tab_rows = g_top_rows = 0;
 	for (i = 0; i < count; i++) {
+		if (items[i].tab == UI_TAB_TOP) {
+			g_top_rows++;
+			continue;
+		}
 		rows[items[i].tab]++;
 		g_tab_rows = max(g_tab_rows, rows[items[i].tab]);
 	}
@@ -786,7 +792,7 @@ static void key_name(int vk, char *name, int size)
 static void panel(HWND game, int w, int h, const wchar_t *pack, const ui_state *s)
 {
 	/* The game's menu spacing, with rows shrinking only if the longest page and the header, tabs and footer need more than 90% of the screen. */
-	float row = (float)(int)(h / max(g_tab_rows * 1.21f + 8.2f, 25.0f)), gap = (float)(int)(row * 0.09f);
+	float row = (float)(int)(h / max((g_tab_rows + g_top_rows) * 1.21f + 8.2f, 25.0f)), gap = (float)(int)(row * 0.09f);
 	float panel_w = min(w * 0.92f, h * 1.5f), x = (w - panel_w) * 0.5f, y = h * 0.05f, items_y;
 	float label_w = (float)(int)(panel_w * 0.36f), value_w = panel_w - label_w, mx, my, key_x, key_w;
 	BOOL down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, click = down && !g_mouse_was_down, close_hover, reload_hover = FALSE, key_hover, off_hover;
@@ -845,7 +851,14 @@ static void panel(HWND game, int w, int h, const wchar_t *pack, const ui_state *
 	y += row + gap * 5.0f;
 
 	pack_row(x, y, label_w, value_w, row, mx, my, click, pack);
-	y += row + gap * 5.0f;
+	y += row + gap;
+	for (i = 0; i < g_item_count; i++) {
+		if (g_items[i].tab != UI_TAB_TOP)
+			continue;
+		item_row(i, x, y, label_w, value_w, row, mx, my, down, click);
+		y += row + gap;
+	}
+	y += gap * 4.0f;
 	tab_row(x, y, panel_w, row, gap, mx, my, click);
 	y += row + gap * 5.0f;
 

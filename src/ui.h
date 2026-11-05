@@ -5,6 +5,7 @@
 enum { UI_SLIDER, UI_CHOICE, UI_TOGGLE };
 enum { UI_SHOW_NUMBER, UI_SHOW_CLOCK };	/* a clock slider's 0 is "Track", then quarter hours from 00:00 */
 enum { UI_TAB_LOOK, UI_TAB_WEATHER, UI_TAB_DISPLAY, UI_TABS };
+#define UI_TAB_TOP UI_TABS	/* not on a page: under the shader pack, always showing */
 
 typedef struct {
 	const char *label;

@@ -144,6 +144,7 @@ enum { ROLE_NONE, ROLE_TERRAIN, ROLE_MODEL };
 #define SHADOW_CASCADES 2
 #define SHADOW_NEAR_SIZE 4096	/* thin parts like levers blink at coarser sizes */
 #define SHADOW_NEAR_RANGE 20.0f
+#define SHADOW_RANGE 500	/* the wide map's reach in front of the camera, see SHADOW_DEPTH_RANGE */
 #define SHADOW_MAX_MOTION 2.0f	/* per frame, more than this is a camera cut */
 #define GROUND_FOLLOW 0.002f	/* per frame, slow enough to ride out jumps */
 #define GROUND_MAX_CLIMB 60.0f	/* further than this is a new track or a teleport */
@@ -2754,7 +2755,29 @@ static const char *const g_cloud_quality_names[] = { "Off", "Low", "Medium", "Hi
 #define TOGGLE(tab, label, key, var, restart) { label, key, UI_TOGGLE, &var, 0, 0, 0, NULL, 0, restart, NULL, tab }
 #define CLOCK_SLIDER(tab, label, key, var, lo, hi) { label, key, UI_SLIDER, &var, lo, hi, 1, NULL, 0, FALSE, NULL, tab, UI_SHOW_CLOCK }
 
+/*
+ Presets set only what costs frame time, the look stays the player's. Changing one of
+ these by hand shows Custom. The order follows g_preset_kinds.
+*/
+enum { PRESET_LOW, PRESET_MEDIUM, PRESET_HIGH, PRESET_ULTRA, PRESET_CUSTOM };
+
+typedef struct {
+	int shadow_size, msaa, aniso, clouds;
+} preset;
+
+static const preset g_presets[] = {
+	{ 1024, 2, 4, CLOUDS_LOW },
+	{ 2048, 4, 8, CLOUDS_LOW },
+	{ 4096, 4, 16, CLOUDS_MEDIUM },
+	{ 8192, 8, 16, CLOUDS_HIGH },
+};
+static const int g_preset_kinds[] = { PRESET_LOW, PRESET_MEDIUM, PRESET_HIGH, PRESET_ULTRA, PRESET_CUSTOM };
+static const char *const g_preset_names[] = { "Low", "Medium", "High", "Ultra", "Custom" };
+static int g_cfg_preset = PRESET_CUSTOM;	/* worked out from the settings, not saved */
+
 static const ui_item g_ui_items[] = {
+	NAMED_CHOICE(UI_TAB_TOP, "Preset", L"preset", g_cfg_preset, g_preset_kinds, g_preset_names, TRUE),
+
 	SLIDER(UI_TAB_LOOK, "Haze", L"fog", g_cfg_fog, 0, 300, 5),
 	SLIDER(UI_TAB_LOOK, "Dirt Depth", L"parallax", g_cfg_parallax, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Motion Blur", L"motion_blur", g_cfg_motion_blur, 0, 200, 5),
@@ -2775,7 +2798,6 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_WEATHER, "Cloud Cover", L"cloud_cover", g_cfg_cloud_cover, 0, 100, 5),
 	SLIDER(UI_TAB_WEATHER, "Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
 	SLIDER(UI_TAB_WEATHER, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
-	SLIDER(UI_TAB_WEATHER, "Shadow Distance", L"shadow_range", g_cfg_shadow_range, 20, 500, 10),
 
 	TOGGLE(UI_TAB_DISPLAY, "Hide Game HUD", L"hide_hud", g_cfg_hide_hud, FALSE),
 	TOGGLE(UI_TAB_DISPLAY, "Hide Cursor in Race", L"hide_cursor", g_cfg_hide_cursor, FALSE),
@@ -2803,7 +2825,7 @@ static void pack_section(wchar_t *section, size_t size)
 }
 
 /* WritePrivateProfileString only touches its own line, so the file's comments stay. */
-void ui_setting_changed(const ui_item *item)
+static void setting_write(const ui_item *item)
 {
 	wchar_t path[MAX_PATH], text[16], section[80] = L"mxs-shaders";
 
@@ -2812,6 +2834,53 @@ void ui_setting_changed(const ui_item *item)
 	log_path(path, L"mxs-shaders.ini");
 	swprintf_s(text, 16, L"%d", *item->value);
 	WritePrivateProfileStringW(section, item->key, text, path);
+}
+
+/* Which preset the settings match, else Custom. */
+static void preset_detect(void)
+{
+	int i;
+
+	g_cfg_preset = PRESET_CUSTOM;
+	for (i = 0; i < PRESET_CUSTOM; i++) {
+		const preset *p = &g_presets[i];
+
+		if (g_cfg_shadow_size == p->shadow_size && g_cfg_msaa == p->msaa && g_cfg_aniso == p->aniso &&
+		    g_cfg_cloud_quality == p->clouds)
+			g_cfg_preset = i;
+	}
+}
+
+/* Sets the chosen preset's settings and saves them where their own rows would. Custom moves on to Low. */
+static void preset_apply(void)
+{
+	const preset *p;
+	size_t i;
+
+	if (g_cfg_preset == PRESET_CUSTOM)
+		g_cfg_preset = PRESET_LOW;
+	p = &g_presets[g_cfg_preset];
+	g_cfg_shadow_size = p->shadow_size;
+	g_cfg_msaa = p->msaa;
+	g_cfg_aniso = p->aniso;
+	g_cfg_cloud_quality = p->clouds;
+	for (i = 0; i < sizeof g_ui_items / sizeof g_ui_items[0]; i++) {
+		const int *v = g_ui_items[i].value;
+
+		if (v == &g_cfg_shadow_size || v == &g_cfg_msaa || v == &g_cfg_aniso || v == &g_cfg_cloud_quality)
+			setting_write(&g_ui_items[i]);
+	}
+	log_msg("preset %s", g_preset_names[g_cfg_preset]);
+}
+
+void ui_setting_changed(const ui_item *item)
+{
+	if (item->value == &g_cfg_preset) {
+		preset_apply();
+		return;
+	}
+	setting_write(item);
+	preset_detect();
 }
 
 void ui_pack_changed(const wchar_t *name)
@@ -3758,7 +3827,12 @@ static void load_live_settings(void)
 	g_cfg_hide_hud = ini_int(L"hide_hud", 0);
 	g_cfg_hide_cursor = ini_int(L"hide_cursor", 1);
 	g_cfg_ui_key = ini_int(L"ui_key", VK_F8);
-	g_cfg_shadow_range = max(pack_int(L"shadow_range", 500), (int)SHADOW_NEAR_RANGE);
+	/*
+	 Fixed: a shorter reach saved little frame time and made shadows pop in close by,
+	 Shadow Quality and the rest are what to lower. Old shadow_range lines are ignored.
+	*/
+	g_cfg_shadow_range = SHADOW_RANGE;
+	preset_detect();
 }
 
 static void hot_reload(void)

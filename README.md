@@ -44,6 +44,15 @@ Press **F8** in the game to open the settings panel. Changes apply straight away
 
 To use another key, click **Panel Key** at the top of the panel and press the new key. Pick one the game doesn't use, because the game sees it too. Escape or a click cancels.
 
+**Preset**, under the shader pack at the top of the panel, sets everything that costs frame rate in one go: Shadow Quality, Antialiasing, Texture Filtering and Cloud Quality. Click it to step through Low, Medium, High and Ultra, then restart the game. Your look settings, such as bloom, haze and colours, stay as they are. It shows Custom once you change one of those four yourself.
+
+| Preset | Shadow Quality | Antialiasing | Texture Filtering | Cloud Quality |
+|---|---|---|---|---|
+| Low | Low | 2x | 4x | Low |
+| Medium | Medium | 4x | 8x | Low |
+| High | High | 4x | 16x | Medium |
+| Ultra | Ultra | 8x | 16x | High |
+
 **Turn Shaders Off** at the bottom of the panel switches straight to the game's own look, and the same button switches back. The panel stays available, and the choice is kept for the next start. Borderless Window is the one thing that stays, since it's about the window and not the look.
 
 Settings are stored in `%LOCALAPPDATA%\MX Simulator\mxs-shaders\mxs-shaders.ini` (on Linux `~/.local/share/mxs-shaders/mxs-shaders.ini`), which you can also edit by hand. The file is the same on both, so one can be copied to the other. For the strength settings, 0 is off.
@@ -67,7 +76,6 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 | `contrast` | 20 | 0 to 100 | Darker shadows and brighter highlights |
 | `split_tone` | 20 | 0 to 100 | Cool shadows and warm highlights |
 | `bloom` | 100 | 0 to 200 | Glow around bright things, 0 turns it off |
-| `shadow_range` | 500 | 20 to 500 | How far shadows reach. Raise `shadow_size` with it to keep shadows sharp |
 | `shadow_size` | 8192 | 1024, 2048, 4096, 8192 | Shadow sharpness. Lower it on older GPUs, 8192 uses about 512 MB of video memory |
 | `msaa` | 8 | 0, 2, 4, 8 | Edge smoothing, 0 turns it off |
 | `anisotropy` | 16 | 1, 2, 4, 8, 16 | Texture sharpness at an angle, 1 turns it off |
@@ -76,7 +84,7 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 | `hide_cursor` | 1 | 0 or 1 | Hides the mouse cursor while riding. It comes back in menus |
 | `ui_key` | 119 | Windows virtual key code, on Linux too | The key that opens the panel, 119 is F8. Panel Key in the panel sets it for you |
 
-Only `shadow_range`'s lower limit of 20 is enforced, and `msaa` and `anisotropy` are capped at what your GPU supports. Higher values for the others still work but may look wrong. Above 500, shadows far away may go missing, and higher values make shadows softer.
+`msaa` and `anisotropy` are capped at what your GPU supports. Higher values for the others still work but may look wrong. How far shadows reach is fixed: a shorter reach saved little frame rate and made shadows pop in close by, so an old `shadow_range` line is ignored.
 
 After editing the file by hand, restart the game to apply your changes.
 
