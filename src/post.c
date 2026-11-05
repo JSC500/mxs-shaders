@@ -64,6 +64,12 @@
 #define UNIT_EXPOSURE 15
 #define UNIT_SHAFTS 16
 #define UNIT_WEATHER_NOISE 18	/* hooks.c keeps the weather noise bound there */
+#define UNIT_SKY_MASK 19
+#define UNIT_SKY 20
+
+#define SKY_LUT_W 256	/* match SKY_LUT_SIZE in sky.glsl */
+#define SKY_LUT_H 128
+#define GL_REPEAT 0x2901
 
 typedef void (WINAPI *cap_fn)(GLenum);
 typedef GLboolean (WINAPI *isenabled_fn)(GLenum);
@@ -160,14 +166,18 @@ static GLint g_exposure_a, g_exposure_b, g_exposure_fx, g_exposure_fy, g_exposur
 static GLuint g_prog_shafts;
 static GLint g_shafts_a, g_shafts_b, g_shafts_fx, g_shafts_fy, g_shafts_matrix, g_shafts_on;
 static GLint g_final_a, g_final_b, g_final_fx, g_final_fy, g_final_height, g_final_up, g_final_sun, g_final_fog, g_final_amount, g_final_night;
-static GLint g_final_sharpen, g_final_bloom;
+static GLint g_final_sharpen, g_final_bloom, g_final_sky_mask_on, g_final_sky_mask_view;
+static GLuint g_prog_sky, g_tex_sky, g_fbo_sky;	/* the clear sky in every direction */
+static BOOL g_sky_drawn;	/* g_tex_sky holds a sky, not nothing */
+static GLint g_sky_sun, g_sky_night;
+static GLint g_final_sky_sun, g_final_moon, g_final_direct_loss, g_final_ambient_loss, g_final_light;
 
 /* The weather uniforms common.glsl declares, in the post programs that use them. */
 typedef struct {
 	GLint world, time, weather, amount, wet;
 } weather_locs;
 
-static weather_locs g_final_weather, g_lens_weather;
+static weather_locs g_final_weather, g_lens_weather, g_sky_weather;
 
 static const char *const g_vs =
 	"#version 150\n"
@@ -237,6 +247,8 @@ static GLuint program(const char *file)
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_shafts"), UNIT_SHAFTS);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_shadow_map"), SHADOW_UNIT);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_weather_noise"), UNIT_WEATHER_NOISE);
+	gl_Uniform1i(gl_GetUniformLocation(p, "u_sky_mask"), UNIT_SKY_MASK);
+	gl_Uniform1i(gl_GetUniformLocation(p, "u_sky"), UNIT_SKY);
 	return p;
 }
 
@@ -320,7 +332,7 @@ void post_init(PROC (WINAPI *get_proc)(LPCSTR))
 /* All or nothing: a broken stage keeps every current program running. */
 static BOOL load_programs(void)
 {
-	GLuint fresh[8];
+	GLuint fresh[9];
 	int i;
 
 	fresh[0] = program("post_ao.fsh");
@@ -331,9 +343,12 @@ static BOOL load_programs(void)
 	fresh[5] = program("post_exposure.fsh");
 	fresh[6] = program("post_shafts.fsh");
 	fresh[7] = program("post_lens.fsh");
+	fresh[8] = program("post_sky.fsh");
 
-	if (!fresh[0] || !fresh[1] || !fresh[2] || !fresh[3] || !fresh[4] || !fresh[5] || !fresh[6] || !fresh[7]) {
-		for (i = 0; i < 8; i++)
+	for (i = 0; i < 9 && fresh[i]; i++)
+		;
+	if (i < 9) {
+		for (i = 0; i < 9; i++)
 			if (fresh[i])
 				gl_DeleteProgram(fresh[i]);
 		return FALSE;
@@ -348,7 +363,12 @@ static BOOL load_programs(void)
 		gl_DeleteProgram(g_prog_exposure);
 		gl_DeleteProgram(g_prog_shafts);
 		gl_DeleteProgram(g_prog_lens);
+		gl_DeleteProgram(g_prog_sky);
 	}
+	g_prog_sky = fresh[8];
+	g_sky_sun = gl_GetUniformLocation(g_prog_sky, "u_sky_sun");
+	g_sky_night = gl_GetUniformLocation(g_prog_sky, "u_night");
+	weather_find(&g_sky_weather, g_prog_sky);
 	g_prog_lens = fresh[7];
 	g_lens_a = gl_GetUniformLocation(g_prog_lens, "u_proj_a");
 	g_lens_b = gl_GetUniformLocation(g_prog_lens, "u_proj_b");
@@ -400,6 +420,13 @@ static BOOL load_programs(void)
 	g_final_night = gl_GetUniformLocation(g_prog_final, "u_night");
 	g_final_sharpen = gl_GetUniformLocation(g_prog_final, "u_sharpen");
 	g_final_bloom = gl_GetUniformLocation(g_prog_final, "u_bloom_amount");
+	g_final_sky_mask_on = gl_GetUniformLocation(g_prog_final, "u_sky_mask_on");
+	g_final_sky_mask_view = gl_GetUniformLocation(g_prog_final, "u_sky_mask_view");
+	g_final_sky_sun = gl_GetUniformLocation(g_prog_final, "u_sky_sun");
+	g_final_moon = gl_GetUniformLocation(g_prog_final, "u_moon");
+	g_final_light = gl_GetUniformLocation(g_prog_final, "u_light");
+	g_final_direct_loss = gl_GetUniformLocation(g_prog_final, "u_direct_loss");
+	g_final_ambient_loss = gl_GetUniformLocation(g_prog_final, "u_ambient_loss");
 	weather_find(&g_final_weather, g_prog_final);
 
 	g_ao_texel = gl_GetUniformLocation(g_prog_ao, "u_texel");
@@ -462,6 +489,8 @@ static void release_targets(void)
 	gl_DeleteTextures(2, g_tex_shafts);
 	gl_DeleteFramebuffers(1, &g_fbo_comp);
 	gl_DeleteTextures(1, &g_tex_comp);
+	gl_DeleteFramebuffers(1, &g_fbo_sky);
+	gl_DeleteTextures(1, &g_tex_sky);
 	gl_DeleteTextures(1, &g_tex_color);
 	gl_DeleteTextures(1, &g_tex_depth);
 	gl_DeleteTextures(2, g_tex_ao);
@@ -477,6 +506,7 @@ static BOOL create_targets(int w, int h)
 	release_targets();
 	g_w = w;
 	g_h = h;
+	g_sky_drawn = FALSE;
 
 	gl_ActiveTexture(GL_TEXTURE0 + UNIT_SRC);
 	g_tex_color = new_texture(GL_RGBA16F, GL_RGBA, GL_FLOAT, w, h, GL_LINEAR);
@@ -508,6 +538,10 @@ static BOOL create_targets(int w, int h)
 	}
 	g_tex_comp = new_texture(GL_RGBA16F, GL_RGBA, GL_FLOAT, w, h, GL_LINEAR);
 	g_fbo_comp = new_fbo(g_tex_comp);
+	/* Across is the turn around the horizon, which wraps. */
+	g_tex_sky = new_texture(GL_RGBA16F, GL_RGBA, GL_FLOAT, SKY_LUT_W, SKY_LUT_H, GL_LINEAR);
+	gl_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	g_fbo_sky = new_fbo(g_tex_sky);
 	g_exposure_first = TRUE;
 	log_msg("post: targets %dx%d", w, h);
 	return TRUE;
@@ -628,11 +662,31 @@ static void pass_exposure(const post_state *s)
 	gl_Uniform1f(g_exposure_b, s->projection[14]);
 	gl_Uniform1f(g_exposure_fx, s->projection[0]);
 	gl_Uniform1f(g_exposure_fy, s->projection[5]);
-	gl_Uniform3f(g_exposure_sun, s->sun_view[0], s->sun_view[1], s->sun_view[2]);
+	gl_Uniform3f(g_exposure_sun, s->sky_sun_view[0], s->sky_sun_view[1], s->sky_sun_view[2]);
 	bind_unit(UNIT_SRC, g_tex_exposure[read]);
 	fullscreen();
 	bind_unit(UNIT_EXPOSURE, g_tex_exposure[g_exposure_write]);
 	g_exposure_first = FALSE;
+}
+
+/* Only needed where the skybox has been read, the painted sky stays elsewhere. */
+static void pass_sky(const post_state *s)
+{
+	gl_BindFramebuffer(GL_FRAMEBUFFER, g_fbo_sky);
+	gl_Viewport(0, 0, SKY_LUT_W, SKY_LUT_H);
+	gl_UseProgram(g_prog_sky);
+	gl_Uniform3f(g_sky_sun, s->sun_world[0], s->sun_world[1], s->sun_world[2]);
+	gl_Uniform1f(g_sky_night, s->night);
+	weather_send(&g_sky_weather, s);
+	fullscreen();
+	bind_unit(UNIT_SKY, g_tex_sky);
+	g_sky_drawn = TRUE;
+}
+
+/* For sprite.fsh, which draws the sky at the start of the next frame. */
+GLuint post_sky_texture(void)
+{
+	return g_ready && g_sky_drawn ? g_tex_sky : 0;
 }
 
 BOOL post_ready(void)
@@ -673,6 +727,8 @@ void post_run(const post_state *s)
 	if (s->bloom > 0.0f)
 		pass_bloom();
 	pass_exposure(s);
+	if (s->sky_mask)
+		pass_sky(s);
 
 	bind_unit(UNIT_AO, g_tex_ao[0]);
 	bind_unit(UNIT_BLOOM, g_tex_bloom[0]);
@@ -688,10 +744,19 @@ void post_run(const post_state *s)
 	gl_Uniform1f(g_final_amount, s->fog_amount);
 	gl_Uniform1f(g_final_night, s->night);
 	gl_Uniform3f(g_final_up, s->view_up[0], s->view_up[1], s->view_up[2]);
-	gl_Uniform3f(g_final_sun, s->sun_view[0], s->sun_view[1], s->sun_view[2]);
+	gl_Uniform3f(g_final_sun, s->sky_sun_view[0], s->sky_sun_view[1], s->sky_sun_view[2]);
+	gl_Uniform3f(g_final_sky_sun, s->sun_world[0], s->sun_world[1], s->sun_world[2]);
+	gl_Uniform3f(g_final_moon, s->moon_world[0], s->moon_world[1], s->moon_world[2]);
+	gl_Uniform3f(g_final_light, s->sun_view[0], s->sun_view[1], s->sun_view[2]);
+	gl_Uniform3f(g_final_direct_loss, s->direct_loss[0], s->direct_loss[1], s->direct_loss[2]);
+	gl_Uniform3f(g_final_ambient_loss, s->ambient_loss[0], s->ambient_loss[1], s->ambient_loss[2]);
 	gl_Uniform3f(g_final_fog, s->fog_color[0], s->fog_color[1], s->fog_color[2]);
 	gl_Uniform1f(g_final_sharpen, s->sharpen);
 	gl_Uniform1f(g_final_bloom, s->bloom);
+	gl_Uniform1i(g_final_sky_mask_on, s->sky_mask != 0);
+	gl_Uniform1i(g_final_sky_mask_view, s->sky_mask_view);
+	if (s->sky_mask)
+		bind_unit(UNIT_SKY_MASK, s->sky_mask);
 	weather_send(&g_final_weather, s);
 	fullscreen();
 
@@ -712,7 +777,7 @@ void post_run(const post_state *s)
 	gl_Uniform1f(g_lens_split_tone, s->split_tone);
 	gl_Uniform1f(g_lens_night, s->night);
 	gl_Uniform1f(g_lens_flare, s->lens_flare);
-	gl_Uniform3f(g_lens_sun, s->sun_view[0], s->sun_view[1], s->sun_view[2]);
+	gl_Uniform3f(g_lens_sun, s->sky_sun_view[0], s->sky_sun_view[1], s->sky_sun_view[2]);
 	gl_Uniform3f(g_lens_up, s->view_up[0], s->view_up[1], s->view_up[2]);
 	gl_Uniform1i(g_lens_goggles, s->goggles);
 	gl_Uniform1f(g_lens_sun_moved, s->sun_moved);
@@ -741,4 +806,5 @@ void post_context_lost(void)
 	g_ready = FALSE;
 	g_fbo_resolve = 0;
 	g_w = g_h = 0;
+	g_sky_drawn = FALSE;
 }

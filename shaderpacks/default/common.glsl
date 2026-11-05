@@ -10,12 +10,23 @@ const float AMBIENT_BOOST = 3.2;
 const float SUN_BOOST = 1.7;
 const float SATURATION = 0.88;
 
-uniform float u_night;	/* the time of day setting, 1 at 100: the game's light isn't a sun */
+uniform float u_night;	/* 0 by day, 1 once twilight has gone */
 
-/* At night the game's light is only a fill, the boost would make it read as daylight. */
-float sun_boost()
+/*
+ How much of the game's sun and sky light the Time of Day setting takes away: a low sun
+ shines orange and weak, at night the light is the moon's. 0 leaves the game's light.
+*/
+uniform vec3 u_direct_loss, u_ambient_loss;
+
+/* The game's sun as the time of day leaves it. */
+vec3 light_tint()
 {
-	return mix(SUN_BOOST, 1.0, u_night);
+	return 1.0 - u_direct_loss;
+}
+
+vec3 sun_boost()
+{
+	return SUN_BOOST * light_tint();
 }
 
 vec3 to_linear(vec3 c)
@@ -33,7 +44,7 @@ vec3 sky_light(vec3 ambient)
 {
 	vec3 c = to_linear(ambient) * AMBIENT_BOOST;
 
-	return mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, 0.5);
+	return mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, 0.5) * (1.0 - u_ambient_loss);
 }
 
 /* Narkowicz's fit of the ACES filmic curve. */
@@ -147,7 +158,7 @@ float sun_shadow(vec3 pos, vec3 n, float ignore_meters)
 		far_shadow = mix(shadow_lookup(u_shadow_map, far_c, far_radius, bias), 1.0, smoothstep(0.85, 1.0, far_edge));
 	}
 
-	return mix(mix(near_shadow, far_shadow, edge), 1.0, u_night);
+	return mix(near_shadow, far_shadow, edge);
 }
 
 /* One lookup is enough for the soft shapes of dust. */
@@ -160,7 +171,7 @@ float sun_shadow_fast(vec3 pos)
 	c = shadow_coord(u_shadow_matrix, pos);
 	if (c.x <= 0.0 || c.x >= 1.0 || c.y <= 0.0 || c.y >= 1.0)
 		return 1.0;
-	return mix(texture(u_shadow_map, vec3(c.xy, c.z - 0.0001)), 1.0, u_night);
+	return texture(u_shadow_map, vec3(c.xy, c.z - 0.0001));
 }
 
 /*
@@ -174,8 +185,9 @@ uniform int u_hdr;
 
 vec3 finish_color(vec3 lit, vec3 fog_color, float density)
 {
+	/* The haze is lit by the sky, so it darkens with it. */
 	if (u_hdr != 0)
-		return apply_fog(lit, scene_from_gamma(fog_color), density);
+		return apply_fog(lit, scene_from_gamma(fog_color) * (1.0 - u_ambient_loss), density);
 	return apply_fog(to_gamma(tonemap(lit)), fog_color, density);
 }
 
@@ -314,5 +326,5 @@ float snow_cover(vec3 world, float facing)
 /* The sky a puddle mirrors, close to the horizon's colour. */
 vec3 sky_reflection(vec3 fog_color)
 {
-	return u_hdr != 0 ? scene_from_gamma(fog_color) : to_linear(fog_color);
+	return (u_hdr != 0 ? scene_from_gamma(fog_color) : to_linear(fog_color)) * (1.0 - u_ambient_loss);
 }

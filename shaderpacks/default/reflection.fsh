@@ -37,5 +37,6 @@ void main()
 	f_fragcolor = texture(u_tex, environment_coord(mirrored)) * vec4(u_specular_color, 1.0);
 	if (u_hdr != 0)
 		f_fragcolor.rgb = to_linear(f_fragcolor.rgb);
-	f_fragcolor.rgb *= fresnel(n, interp_viewer, BASE_REFLECTION);
+	/* The environment is a daylight picture, it dims with the sky's light. */
+	f_fragcolor.rgb *= fresnel(n, interp_viewer, BASE_REFLECTION) * (1.0 - u_ambient_loss);
 }

@@ -129,7 +129,7 @@ void main()
 	if (power >= 127.875)
 		power = u_shininess;
 	if (ndl > 0.0)
-		lit += to_linear(s.rgb * u_specular_color) * ndl *
+		lit += to_linear(s.rgb * u_specular_color) * light_tint() * ndl *
 		       specular(n, interp_viewer, light, power) * fresnel(n, interp_viewer, 0.04) * 8.0;
 
 	/*

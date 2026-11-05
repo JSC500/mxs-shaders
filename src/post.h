@@ -12,7 +12,12 @@ typedef struct {
 	GLuint scene_fbo;
 	int w, h;
 	const float *projection;
-	const float *sun_view;
+	const float *sun_view;		/* the light the scene is shaded with, the moon at night */
+	const float *sky_sun_view;	/* where the sun really is, below the horizon too */
+	const float *sun_world;		/* the same in world space, and the moon's */
+	const float *moon_world;
+	const float *direct_loss;	/* how much of the game's sun and sky light the time of day takes away */
+	const float *ambient_loss;
 	const float *view_up;		/* world up in view space */
 	const float *fog_color;		/* the game's, gamma encoded */
 	const float *shadow_matrix;	/* view space to wide shadow map, NULL without one */
@@ -26,10 +31,12 @@ typedef struct {
 	float time;			/* seconds, for weather that moves */
 	int weather;			/* as common.glsl's WEATHER_ constants */
 	float weather_amount, wet;
-	float night;			/* the time of day setting, 1 has nothing from the sun */
+	float night;			/* 0 by day, 1 once twilight has gone */
 	float motion;			/* blur per frame of movement */
 	float blur_near;		/* what's closer moves with the camera */
 	float reproject[16];		/* this frame's view space to last frame's screen */
+	GLuint sky_mask;		/* the skybox's skyline around the horizon, 0 until it's known */
+	int sky_mask_view;		/* debugging: tint what the mask counts as sky */
 	GLuint program, vao;
 	GLenum active_unit, blend_src, blend_dst;
 	GLint viewport[4];
@@ -39,4 +46,5 @@ void post_init(PROC (WINAPI *get_proc)(LPCSTR));
 void post_run(const post_state *s);
 void post_reload(void);
 BOOL post_ready(void);
+GLuint post_sky_texture(void);	/* the clear sky in every direction, 0 until there is one */
 void post_context_lost(void);

@@ -150,7 +150,7 @@ void main()
 	s = textureGrad(u_smap, uv, dFdx(interp_texcoord), dFdy(interp_texcoord));
 	power = s.g * 128.0 + 0.125;
 	if (ndl > 0.0)
-		lit += to_linear(u_specular_color) * s.r * len * ndl * (1.0 - snow) *
+		lit += to_linear(u_specular_color) * light_tint() * s.r * len * ndl * (1.0 - snow) *
 		       specular(n, interp_viewer, light, power) * fresnel(n, interp_viewer, 0.04) * 4.0;
 
 	/* Water mirrors the sky, most at a glancing look, and the sun as a sharp glint. */
@@ -158,7 +158,7 @@ void main()
 		float f = fresnel(up, interp_viewer, 0.02) * water;
 
 		lit = mix(lit, sky_reflection(u_fog_color), f);
-		lit += to_linear(u_diffuse) * ndl * specular(up, interp_viewer, light, PUDDLE_SHINE) * f;
+		lit += to_linear(u_diffuse) * light_tint() * ndl * specular(up, interp_viewer, light, PUDDLE_SHINE) * f;
 	}
 
 	f_fragcolor = vec4(finish_color(lit, u_fog_color, u_fog_density), u_ambient.a);

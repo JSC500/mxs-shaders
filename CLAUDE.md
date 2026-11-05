@@ -80,7 +80,8 @@ How the Linux game behaves, from a probe run (NVIDIA under XWayland on GNOME, ga
 - **Rendering:** the same shader names and draw order as on Windows, and its own 4096x4096 framebuffer before the main pass. VAO numbers depend on the bike, so detection must keep working from draw order.
 
 ## How the mod works
-- **Texture units:** the shadow maps use 8-9, the post passes 10-16, the F8 panel's font 17 and the weather noise 18. A new texture that stays bound needs its own unit above these.
+- **Texture units:** the shadow maps use 8-9, the post passes 10-16, the F8 panel's font 17, the weather noise 18 and the sky mask 19. A new texture that stays bound needs its own unit above these.
+- **Sky mask:** `sky_face_drawn` reads each side face of the skybox back once and finds, per column, where the painting turns from sky to ground. The result is the sine of the skyline's elevation in 2048 directions around the horizon, and `sky_open()` in `post_final.fsh` uses it to tell open sky from painted scenery. `sky_mask_view=1` in the ini tints open sky magenta, or yellow while the skybox hasn't been read. Checked in game on a grassland and a mountain skybox: the edge sits on the ridge and its trees all the way around.
 - **Performance:** dust particles and models overdraw a lot, so anything per pixel in `terrain.fsh`, `model.fsh` or `sprite.fsh` multiplies. Procedural noise there cost a big drop in fps: precompute it into a texture, like `weather_noise_create`, and put work behind uniform checks so it costs nothing when it's off.
 - **Weather:** `common.glsl` holds the weather code that every pack shader shares. Anything that has to stay fixed to the track goes through `u_world_from_view`, which `weather_apply` sends to the game's programs each frame and `post.c` sends to the post passes. Rain and snow are drawn around the camera in post, so they don't stay in place as the camera moves, and puddles reflect only the sky.
 - **Sun override:** Sun Height and Sun Turn change the sun's world direction in `sun_effective`, and the result replaces `u_light_position` everywhere, including the game's own shading. The light can arrive before the frame's camera, so that shading may be a frame behind while the camera turns.
@@ -88,6 +89,7 @@ How the Linux game behaves, from a probe run (NVIDIA under XWayland on GNOME, ga
 - **F8 panel:** settings are split into the Look, Sun & Weather and Display tabs, and each new item needs one. Row height follows the longest tab. Sliders are saved per pack, toggles and choices in the main section.
 
 ## How the game behaves
+- **Skybox:** the first draws of a race frame are five quads with the sprite shader, depth writes off: the sides at -Z, +X, +Z, -X, then the top, corners at ±1 in world axes, each with its own RGB texture (1024x1024 on the tracks seen), no alpha. The top row of each side texture is its upper edge, and below the painting the faces are black, which terrain hides. Some skyboxes paint mountains and trees into the sides, and they end up at depth 1 like the sky.
 - **Sprites:** the sprite shader also draws terrain tiles into the game's own framebuffer, so screen-only effects must check the framebuffer first. `sprite_set_mode` handles this. Missing it caused big rectangles on the ground.
 - **Skinned draws:** their modelview sits about 2,000 units from the bike, because the bone translations hold the rider's world position. Measure distances from posed bones.
 - **Physics:** it can tick twice in one rendered frame, which caused shadow flicker at speed.

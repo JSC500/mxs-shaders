@@ -156,6 +156,7 @@ enum { SPRITE_NORMAL, SPRITE_SKY, SPRITE_PARTICLE };
 
 static GLuint g_sprite_prog;
 static int g_sprite_mode = -1, g_sprite_phase;
+static int g_sky_draws;	/* sky faces drawn so far this frame */
 static BOOL g_particle_phase;
 static GLint g_loc_sprite_mode[MAX_IDS], g_loc_sun_view[MAX_IDS], g_loc_screen[MAX_IDS], g_loc_hdr[MAX_IDS], g_loc_parallax[MAX_IDS];
 static GLuint g_reflection_prog;
@@ -182,6 +183,7 @@ static BOOL g_rec_overflow;
 static int g_prog_role[MAX_IDS];
 static GLint g_loc_proj[MAX_IDS], g_loc_mv[MAX_IDS], g_loc_light[MAX_IDS];
 static GLint g_loc_shadow_matrix[MAX_IDS], g_loc_shadow_map[MAX_IDS], g_loc_shadow_on[MAX_IDS], g_loc_night[MAX_IDS];
+static GLint g_loc_direct_loss[MAX_IDS], g_loc_ambient_loss[MAX_IDS];
 static GLint g_loc_world_from_view[MAX_IDS], g_loc_time[MAX_IDS], g_loc_weather[MAX_IDS], g_loc_weather_amount[MAX_IDS], g_loc_wet[MAX_IDS];
 static GLint g_loc_weather_noise[MAX_IDS];
 static GLint g_loc_shadow_pass[MAX_IDS], g_loc_view_up[MAX_IDS];
@@ -221,6 +223,7 @@ static GLenum g_active_unit = GL_TEXTURE0;
 typedef struct {
 	int w, h, internal, min_filter;
 	BOOL aniso;
+	unsigned uploads;	/* level 0 uploads, so a reused name counts as a new texture */
 } tex_info;
 
 static tex_info g_tex[MAX_IDS];
@@ -241,8 +244,8 @@ static int g_hud_boxes, g_hud_boxes_last;
 static BOOL g_cursor_hidden;
 static BOOL g_reload_requested, g_enabled_changed;	/* from the panel, done at the frame boundary */
 static int g_cfg_fog, g_cfg_parallax, g_cfg_motion_blur, g_cfg_dof, g_cfg_saturation, g_cfg_contrast, g_cfg_split_tone;
-static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_time_of_day, g_cfg_ui_key, g_cfg_enabled;
-static int g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_bloom, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_height, g_cfg_sun_turn;
+static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_clock, g_cfg_ui_key, g_cfg_enabled;
+static int g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_bloom, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_turn;
 static int g_cfg_weather, g_cfg_weather_amount, g_cfg_wet;
 static float g_weather_time;	/* seconds since the first frame, for drifting clouds and falling rain */
 
@@ -333,6 +336,8 @@ static glIsProgram_t my_glIsProgram;
 static glIsTexture_t my_glIsTexture;
 
 static glReadPixels_t real_glReadPixels;
+typedef void (WINAPI *glGetTexImage_t)(GLenum, GLint, GLenum, GLenum, void *);
+static glGetTexImage_t real_glGetTexImage;
 static glBindFramebuffer_t real_glBindFramebuffer;
 static glEnable_t real_glEnable;
 static glDisable_t real_glDisable;
@@ -470,6 +475,7 @@ static float lod_bias_wanted(void);
 static void program_refresh(GLuint program);
 static void sprite_set_mode(int mode);
 static void hdr_set(int on);
+static void time_of_day_apply(BOOL race);
 static void terrain_frame_end(void);
 
 /* Saves the frame from GL, since desktop capture can't be trusted to see the game. */
@@ -529,6 +535,7 @@ static void frame_boundary(const char *source)
 	g_post_done = g_particle_phase = g_hud_phase = FALSE;
 	g_hud_boxes_last = g_hud_boxes;
 	g_hud_boxes = 0;
+	g_sky_draws = 0;
 	cursor_update();
 
 	/*
@@ -536,8 +543,10 @@ static void frame_boundary(const char *source)
 	 linear scene. Menus don't, so a frame that wasn't 3D turns it off again.
 	*/
 	sprite_set_mode(g_shadow_ready ? SPRITE_SKY : SPRITE_NORMAL);
-	if (!g_shadow_ready)
+	if (!g_shadow_ready) {
 		hdr_set(0);
+		time_of_day_apply(FALSE);
+	}
 
 	/* This frame's recording is what the next frame's shadows are drawn from. */
 	{
@@ -687,44 +696,184 @@ static BOOL v_normalize(float *v)
 #define SUN_MIN_HEIGHT 8	/* degrees, lower and the shadows would cover the map */
 #define RADIANS (3.14159265f / 180.0f)
 
+/*
+ --- time of day ---
+
+ The Time of Day setting is 0 for the track's own light, else 1 + quarter hours past
+ midnight. The sun runs a late spring day at 45 degrees north: up around five, 60
+ degrees high at noon, where the track's own sun points at Sun Turn 0 so its intended
+ light stays. The moon is full, opposite the sun, up all night. A little after sunset
+ the game's light becomes the moon's, so the moon casts the shadows. The colour and
+ strength of both lights, and of the sky's, go to the shaders as how much of the
+ game's light is taken away, so 0 leaves a shader that doesn't know them as it was.
+*/
+#define CLOCK_TRACK 0
+#define CLOCK_STEPS 96
+#define LATITUDE 45.0f
+#define DECLINATION 15.0f
+#define MOON_TAKES_OVER -3.0f	/* the sun's height when the light becomes the moon's */
+#define NIGHT_DEPTH 12.0f	/* degrees below the horizon where twilight has gone */
+
+static const float g_zenith_depth[3] = { 0.10f, 0.17f, 0.33f };	/* of the air straight up, haze included */
+/* Against the noon sun, blue to dark adapted eyes. The moon outshines the night sky, so it casts clear shadows. */
+static const float g_moonlight[3] = { 0.07f, 0.085f, 0.12f };
+static const float g_night_sky_light[3] = { 0.03f, 0.038f, 0.06f };
+static const float g_twilight_sky_light[3] = { 0.72f, 0.84f, 1.15f };	/* the sky's light without the sun in it */
+
+static float g_sun_world[3] = { 0.0f, 1.0f, 0.0f };	/* toward the sun, below the horizon too */
+static float g_moon_world[3] = { 0.0f, -1.0f, 0.0f };
+static float g_night;	/* 0 by day, 1 when twilight has gone */
+static float g_direct_loss[3], g_ambient_loss[3];
+
+static BOOL clock_set(void)
+{
+	return g_cfg_enabled && g_cfg_clock > CLOCK_TRACK;
+}
+
 static BOOL sun_moved(void)
 {
-	return g_cfg_enabled && (g_cfg_sun_height > 0 || g_cfg_sun_turn % 360 != 0);
+	return clock_set() || (g_cfg_enabled && g_cfg_sun_turn % 360 != 0);
+}
+
+static float smooth_step(float a, float b, float x)
+{
+	float t = (x - a) / (b - a);
+
+	t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
+	return t * t * (3.0f - 2.0f * t);
+}
+
+/* How much air the sun shines through at a height in degrees, 1 straight up (Kasten and Young). */
+static float air_mass(float height)
+{
+	height = max(height, 0.0f);
+	return 1.0f / ((float)sin(height * RADIANS) + 0.50572f * (float)pow(height + 6.07995f, -1.6364f));
 }
 
 /*
- The game's sun in view space, turned and raised by the Sun Turn and Sun Height
- settings. They act on its world direction, so the camera turning doesn't move it.
+ The light's colour and strength by the sun's and moon's height in degrees, against the
+ noon sun the tracks are lit for.
+*/
+static void daylight(float sun, float moon, float *direct, float *ambient)
+{
+	float level, blue, sun_up = smooth_step(-1.0f, 2.0f, sun);
+	float moon_up = smooth_step(0.0f, 6.0f, moon) * smooth_step(MOON_TAKES_OVER, MOON_TAKES_OVER - 5.0f, sun);
+	int i;
+
+	/* Bright from the sky by day, a little left in twilight, then only what the moon gives. */
+	level = sun >= 0.0f ? 0.3f + 0.7f * smooth_step(0.0f, 30.0f, sun) : 0.3f * smooth_step(-NIGHT_DEPTH, 0.0f, sun);
+	blue = 1.0f - smooth_step(0.0f, 10.0f, sun);
+	for (i = 0; i < 3; i++) {
+		if (sun > MOON_TAKES_OVER)
+			direct[i] = min((float)exp(-g_zenith_depth[i] * (air_mass(sun) - air_mass(60.0f))), 1.0f) * sun_up;
+		else
+			direct[i] = g_moonlight[i] * moon_up;
+		ambient[i] = min(level * (1.0f + (g_twilight_sky_light[i] - 1.0f) * blue) + g_night_sky_light[i], 1.0f);
+	}
+}
+
+/* The sun at the set time, world space, south being where the track's sun points. */
+static void clock_sun(float *sun, const float *south)
+{
+	float hours = (g_cfg_clock - 1) * 0.25f, h = (hours - 12.0f) * 15.0f * RADIANS;
+	float lat = LATITUDE * RADIANS, dec = DECLINATION * RADIANS;
+	float up = (float)(sin(lat) * sin(dec) + cos(lat) * cos(dec) * cos(h));
+	float east = (float)(-cos(dec) * sin(h));
+	float north = (float)(cos(lat) * sin(dec) - sin(lat) * cos(dec) * cos(h));
+
+	/* With y up, east is up x south. */
+	sun[0] = south[2] * east - south[0] * north;
+	sun[1] = up;
+	sun[2] = -south[0] * east - south[2] * north;
+}
+
+/* A direction raised to at least a height in degrees, keeping where it points around the horizon. */
+static void raise_to(float *d, float height)
+{
+	float flat = (float)sqrt(d[0] * d[0] + d[2] * d[2]), h;
+
+	if ((float)asin(min(max(d[1], -1.0f), 1.0f)) >= height * RADIANS)
+		return;
+	if (flat < 1e-4f) {
+		d[0] = flat = 1.0f;
+		d[2] = 0.0f;
+	}
+	h = height * RADIANS;
+	d[0] *= (float)cos(h) / flat;
+	d[2] *= (float)cos(h) / flat;
+	d[1] = (float)sin(h);
+}
+
+/*
+ The game's sun in view space, turned by Sun Turn and replaced by the sun or moon at
+ the set time. They act on its world direction, so the camera turning doesn't move it.
+ Also works out the sky's sun and moon and the light's colour for this frame.
 */
 static void sun_effective(float *out, const float *in, const float *inv_view)
 {
-	float w[3], len = (float)sqrt(v_dot(in, in)), turn = g_cfg_sun_turn * RADIANS;
-	float x, flat, height, side;
+	float w[3], light[3], south[3], len = (float)sqrt(v_dot(in, in)), turn = g_cfg_sun_turn * RADIANS;
+	float x, flat, side, sun_height;
 	int i;
 
-	if (!sun_moved() || len < 1e-6f) {
+	if (len < 1e-6f) {
 		memcpy(out, in, 3 * sizeof *out);
 		return;
 	}
 	for (i = 0; i < 3; i++)
-		w[i] = inv_view[0 + i] * in[0] + inv_view[4 + i] * in[1] + inv_view[8 + i] * in[2];
-	x = w[0] * (float)cos(turn) - w[2] * (float)sin(turn);
-	w[2] = w[0] * (float)sin(turn) + w[2] * (float)cos(turn);
-	w[0] = x;
-	if (g_cfg_sun_height > 0) {
-		/* Whether the game's vector runs toward the sun or away, it stays on that side. */
-		height = max(g_cfg_sun_height, SUN_MIN_HEIGHT) * RADIANS;
-		side = w[1] < 0.0f ? -1.0f : 1.0f;
-		flat = (float)sqrt(w[0] * w[0] + w[2] * w[2]);
-		if (flat < 1e-4f) {
-			w[0] = flat = 1.0f;
-			w[2] = 0.0f;
-		}
-		w[0] *= (float)cos(height) * len / flat;
-		w[2] *= (float)cos(height) * len / flat;
-		w[1] = side * (float)sin(height) * len;
+		w[i] = (inv_view[0 + i] * in[0] + inv_view[4 + i] * in[1] + inv_view[8 + i] * in[2]) / len;
+	/* Whether the game's vector runs toward the sun or away, the result stays on that side. */
+	side = w[1] < 0.0f ? -1.0f : 1.0f;
+	for (i = 0; i < 3; i++)
+		w[i] *= side;
+	if (g_cfg_enabled) {
+		x = w[0] * (float)cos(turn) - w[2] * (float)sin(turn);
+		w[2] = w[0] * (float)sin(turn) + w[2] * (float)cos(turn);
+		w[0] = x;
 	}
+
+	if (!clock_set()) {
+		memcpy(g_sun_world, w, sizeof g_sun_world);
+		for (i = 0; i < 3; i++) {
+			g_moon_world[i] = -w[i];
+			g_direct_loss[i] = g_ambient_loss[i] = 0.0f;
+		}
+		g_night = 0.0f;
+		if (!sun_moved()) {
+			memcpy(out, in, 3 * sizeof *out);
+			return;
+		}
+		memcpy(light, w, sizeof light);
+	} else {
+		float direct[3], ambient[3];
+
+		flat = (float)sqrt(w[0] * w[0] + w[2] * w[2]);
+		south[0] = flat > 1e-4f ? w[0] / flat : 0.0f;
+		south[1] = 0.0f;
+		south[2] = flat > 1e-4f ? w[2] / flat : 1.0f;
+		clock_sun(g_sun_world, south);
+		for (i = 0; i < 3; i++)
+			g_moon_world[i] = -g_sun_world[i];
+		sun_height = (float)asin(min(max(g_sun_world[1], -1.0f), 1.0f)) / RADIANS;
+		g_night = 1.0f - smooth_step(-NIGHT_DEPTH, 0.0f, sun_height);
+		daylight(sun_height, -sun_height, direct, ambient);
+		for (i = 0; i < 3; i++) {
+			g_direct_loss[i] = 1.0f - direct[i];
+			g_ambient_loss[i] = 1.0f - ambient[i];
+		}
+		memcpy(light, sun_height > MOON_TAKES_OVER ? g_sun_world : g_moon_world, sizeof light);
+		raise_to(light, SUN_MIN_HEIGHT);
+	}
+
 	/* Back to view space with the transposed rotation. */
+	for (i = 0; i < 3; i++)
+		out[i] = (inv_view[i * 4 + 0] * light[0] + inv_view[i * 4 + 1] * light[1] + inv_view[i * 4 + 2] * light[2]) * side * len;
+}
+
+/* A world direction in view space. */
+static void world_to_view(float *out, const float *w, const float *inv_view)
+{
+	int i;
+
 	for (i = 0; i < 3; i++)
 		out[i] = inv_view[i * 4 + 0] * w[0] + inv_view[i * 4 + 1] * w[1] + inv_view[i * 4 + 2] * w[2];
 }
@@ -944,14 +1093,20 @@ static void sprite_set_mode(int mode)
 	my_glProgramUniform1i(g_sprite_prog, g_loc_sprite_mode[g_sprite_prog], mode);
 }
 
-#define FULL_NIGHT 100	/* shadows have faded out here, so the maps aren't drawn */
-
-/* Sent every frame, the setting changes live and a shader reload forgets it. */
-static void time_of_day_apply(void)
+/*
+ Sent every race frame, the setting changes live and a shader reload forgets it. Menus
+ get the game's own light back, or a night race would leave the bike preview dark.
+*/
+static void time_of_day_apply(BOOL race)
 {
+	static const float none[3] = { 0.0f, 0.0f, 0.0f };
+	static BOOL sent;
 	GLuint prog[4];
 	int i;
 
+	if (!race && !sent)
+		return;
+	sent = race;
 	prog[0] = g_terrain_prog;
 	prog[1] = g_model_prog;
 	prog[2] = g_reflection_prog;
@@ -960,9 +1115,11 @@ static void time_of_day_apply(void)
 		if (!prog[i])
 			continue;
 		if (g_loc_night[prog[i]] >= 0)
-			my_glProgramUniform1f(prog[i], g_loc_night[prog[i]], g_cfg_time_of_day / 100.0f);
-		if (g_cfg_time_of_day >= FULL_NIGHT && g_loc_shadow_on[prog[i]] >= 0)
-			my_glProgramUniform1i(prog[i], g_loc_shadow_on[prog[i]], 0);
+			my_glProgramUniform1f(prog[i], g_loc_night[prog[i]], race ? g_night : 0.0f);
+		if (g_loc_direct_loss[prog[i]] >= 0)
+			my_glProgramUniform3fv(prog[i], g_loc_direct_loss[prog[i]], 1, race ? g_direct_loss : none);
+		if (g_loc_ambient_loss[prog[i]] >= 0)
+			my_glProgramUniform3fv(prog[i], g_loc_ambient_loss[prog[i]], 1, race ? g_ambient_loss : none);
 	}
 }
 
@@ -1069,9 +1226,9 @@ static void shadow_frame_start(const float *view)
 		return;
 	hdr_set(g_cfg_post && g_fbo && post_ready());
 	sprite_set_mode(SPRITE_NORMAL);
-	time_of_day_apply();
 	mat_inv_rigid(inv_view, view);
 	sun_effective(g_light_view, g_light_game, inv_view);
+	time_of_day_apply(TRUE);
 	weather_apply(inv_view);
 
 	/* The rider stays near the ground, so slowly following them finds it on any track. */
@@ -1107,7 +1264,7 @@ static void shadow_frame_start(const float *view)
 	 is known. The chase camera moves with the rider, so its real movement says
 	 where they are, including frames where physics ticked twice.
 	*/
-	if (g_shadow_ready && g_have_prev_cam && !g_replay_block && g_cfg_time_of_day < FULL_NIGHT) {
+	if (g_shadow_ready && g_have_prev_cam && !g_replay_block) {
 		for (c = 0; c < 3; c++)
 			motion[c] = inv_view[12 + c] - g_prev_inv_view[12 + c];
 		if (v_dot(motion, motion) > SHADOW_MAX_MOTION * SHADOW_MAX_MOTION)
@@ -2019,6 +2176,306 @@ static const mesh_sphere *mesh_sphere_current(void)
 	return g_mesh_sphere_state[vao] == SPHERE_KNOWN ? &g_mesh_sphere[vao] : NULL;
 }
 
+/*
+ --- the sky ---
+
+ The game's sky is a cube of RGB textures drawn first in a frame, sides then top, and
+ some tracks paint mountains or trees into the lower part of the sides. Both end up at
+ depth 1, so post can't tell them apart on its own. Each side face is read back once,
+ and every column is searched from the top for where the painting turns from sky to
+ ground. The result is the skyline's height in each direction around the horizon.
+
+ sprite.fsh then draws the atmosphere above the skyline in the game's own sky draws,
+ so every multisample behind a leaf already holds it. Replacing it in post left the
+ painted sky in pixels shared with foliage. Each face's corners give the direction
+ of every texel, in step with the painting and without waiting for the frame's camera.
+*/
+#define SKY_MASK_UNIT 19	/* above the weather noise at 18 */
+#define SKY_LUT_UNIT 20		/* post.c's clear sky, kept from the last frame */
+#define SKY_MASK_BINS 2048	/* directions around the horizon, finer than a face's columns */
+#define SKY_MAX_DRAWS 6	/* a cube's faces, the game draws five */
+#define SKY_GROUND_RUN 6	/* rows of ground in a row, so one dark texel isn't the skyline */
+#define SKY_UNSEEN -2.0f	/* below any skyline, for a direction no side face covered */
+#define SKY_TWO_PI 6.28318531f
+#define GL_R32F 0x822E
+#define GL_CLAMP_TO_EDGE 0x812F
+
+typedef struct {
+	GLuint tex;
+	unsigned uploads;
+	BOOL side, placed;
+	/* Columns are the corners at the texture's low and high u and v: (lo, lo), (hi, lo), (lo, hi), (hi, hi). Their w holds lo u, lo v, hi u, hi v. */
+	float place[16];
+} sky_face;
+
+static sky_face g_sky_face[SKY_MAX_DRAWS];
+static float g_sky_line[SKY_MASK_BINS];	/* sine of the skyline's elevation */
+static GLuint g_sky_mask;
+static BOOL g_sky_mask_valid;
+static int g_cfg_sky_mask_view;
+static GLint g_loc_sky_face_on = -1, g_loc_sky_face = -1, g_loc_sky_sun = -1;
+
+/* Reads one float attribute of the sprite program's vertices start to start + 3. */
+static BOOL sky_attr_read(const char *name, GLuint start, float out[4][4])
+{
+	GLint attr, size = 0, type = 0, stride = 0, buffer = 0;
+	void *pointer = NULL;
+	int i;
+
+	attr = my_glGetAttribLocation(g_sprite_prog, name);
+	if (attr < 0)
+		return FALSE;
+	my_glGetVertexAttribiv(attr, GL_VERTEX_ATTRIB_ARRAY_SIZE, &size);
+	my_glGetVertexAttribiv(attr, GL_VERTEX_ATTRIB_ARRAY_TYPE, &type);
+	my_glGetVertexAttribiv(attr, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &stride);
+	my_glGetVertexAttribiv(attr, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buffer);
+	my_glGetVertexAttribPointerv(attr, GL_VERTEX_ATTRIB_ARRAY_POINTER, &pointer);
+	if (size < 2 || size > 4 || type != GL_FLOAT || !buffer)
+		return FALSE;
+	if (!stride)
+		stride = size * (int)sizeof(float);
+	memset(out, 0, 4 * sizeof out[0]);
+	my_glBindBuffer(GL_COPY_READ_BUFFER, buffer);
+	for (i = 0; i < 4; i++)
+		my_glGetBufferSubData(GL_COPY_READ_BUFFER, (ptrdiff_t)pointer + (ptrdiff_t)(start + i) * stride,
+				      size * sizeof(float), out[i]);
+	my_glBindBuffer(GL_COPY_READ_BUFFER, 0);
+	return TRUE;
+}
+
+/* Blue or neutral reads as sky. Green or brown, darkness that isn't deep blue, or fine detail reads as ground. */
+static BOOL sky_texel_ground(const unsigned char *p, const unsigned char *below)
+{
+	float b = p[0], g = p[1], r = p[2];
+	float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+	float score = 0.0f;
+
+	if (max(g, r) - b > 12.0f)
+		score += 1.0f;
+	if (lum < 110.0f && b - max(r, g) < 25.0f)
+		score += 1.0f;
+	if (below && abs(below[1] - p[1]) > 40 && lum < 170.0f)
+		score += 0.5f;
+	return score >= 1.0f;
+}
+
+static void sky_corner(const float c[2][2][3], float s, float t, float out[3])
+{
+	int i;
+
+	for (i = 0; i < 3; i++)
+		out[i] = (c[0][0][i] * (1 - s) + c[1][0][i] * s) * (1 - t) + (c[0][1][i] * (1 - s) + c[1][1][i] * s) * t;
+}
+
+/* The face's corners by their place in the texture, whatever order the quad lists them in. */
+static BOOL sky_face_place(sky_face *f, GLuint start)
+{
+	float pos[4][4], uv[4][4], lo[2], hi[2];
+	int have = 0, i, k;
+
+	if (!sky_attr_read("vattr_position", start, pos) || !sky_attr_read("vattr_texcoord", start, uv))
+		return FALSE;
+	lo[0] = lo[1] = 1e30f;
+	hi[0] = hi[1] = -1e30f;
+	for (i = 0; i < 4; i++) {
+		lo[0] = min(lo[0], uv[i][0]);
+		hi[0] = max(hi[0], uv[i][0]);
+		lo[1] = min(lo[1], uv[i][1]);
+		hi[1] = max(hi[1], uv[i][1]);
+	}
+	if (hi[0] - lo[0] < 0.5f || hi[1] - lo[1] < 0.5f)
+		return FALSE;
+	for (i = 0; i < 4; i++) {
+		int a = uv[i][0] > (lo[0] + hi[0]) * 0.5f, b = uv[i][1] > (lo[1] + hi[1]) * 0.5f;
+
+		for (k = 0; k < 3; k++)
+			f->place[(b * 2 + a) * 4 + k] = pos[i][k];
+		have |= 1 << (b * 2 + a);
+	}
+	f->place[3] = lo[0];
+	f->place[7] = lo[1];
+	f->place[11] = hi[0];
+	f->place[15] = hi[1];
+	return have == 15;
+}
+
+/* Adds one side face's skyline to the bins. FALSE if it can't be read. */
+static BOOL sky_face_read(const sky_face *f, GLuint tex)
+{
+	float corner[2][2][3], lo[2], hi[2], top[3], bottom[3];
+	int w = g_tex[tex].w, h = g_tex[tex].h, i, a, b, x, row0, row1, step;
+	unsigned char *pixels;
+
+	for (a = 0; a < 2; a++)
+		for (b = 0; b < 2; b++)
+			memcpy(corner[a][b], &f->place[(b * 2 + a) * 4], sizeof corner[a][b]);
+	lo[0] = f->place[3];
+	lo[1] = f->place[7];
+	hi[0] = f->place[11];
+	hi[1] = f->place[15];
+
+	/* Texture rows run down the face from whichever end is higher. */
+	sky_corner(corner, 0.5f, 0.0f, top);
+	sky_corner(corner, 0.5f, 1.0f, bottom);
+	row0 = (int)ceilf(lo[1] * h - 0.5f);
+	row1 = (int)floorf(hi[1] * h - 0.5f);
+	if (top[1] < bottom[1]) {
+		i = row0;
+		row0 = row1;
+		row1 = i;
+	}
+	step = row1 > row0 ? 1 : -1;
+	if (row0 < 0 || row0 >= h || row1 < 0 || row1 >= h)
+		return FALSE;
+
+	pixels = malloc((size_t)w * h * 4);
+	if (!pixels)
+		return FALSE;
+	real_glActiveTexture(GL_TEXTURE0 + SKY_MASK_UNIT);
+	real_glBindTexture(GL_TEXTURE_2D, tex);
+	real_glGetTexImage(GL_TEXTURE_2D, 0, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+	real_glBindTexture(GL_TEXTURE_2D, g_sky_mask);
+	real_glActiveTexture(g_active_unit);
+
+	for (x = 0; x < w; x++) {
+		float u = (x + 0.5f) / w, s = (u - lo[0]) / (hi[0] - lo[0]), t, dir[3], len, az;
+		int y, run = 0, line = row1, bin;
+
+		if (s < 0.0f || s > 1.0f)
+			continue;
+		for (y = row0; y != row1 + step; y += step) {
+			const unsigned char *p = pixels + ((size_t)y * w + x) * 4;
+			int next = y + 2 * step;
+			const unsigned char *below = next >= 0 && next < h ? pixels + ((size_t)next * w + x) * 4 : NULL;
+
+			if (!sky_texel_ground(p, below)) {
+				run = 0;
+			} else if (++run == SKY_GROUND_RUN) {
+				line = y - (SKY_GROUND_RUN - 1) * step;
+				break;
+			}
+		}
+		t = ((line + 0.5f) / h - lo[1]) / (hi[1] - lo[1]);
+		sky_corner(corner, s, t, dir);
+		len = (float)sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+		if (len <= 0.0f)
+			continue;
+		az = (float)atan2(dir[2], dir[0]);
+		bin = (int)((az / SKY_TWO_PI + 0.5f) * SKY_MASK_BINS) % SKY_MASK_BINS;
+		g_sky_line[bin] = max(g_sky_line[bin], dir[1] / len);
+	}
+	free(pixels);
+	return TRUE;
+}
+
+static void sky_mask_upload(void)
+{
+	static float filled[SKY_MASK_BINS];
+	float last = SKY_UNSEEN;
+	int i;
+
+	/* A face narrower than the bins leaves some empty: they take the last one filled. */
+	for (i = 0; i < SKY_MASK_BINS; i++)
+		if (g_sky_line[i] > SKY_UNSEEN)
+			last = g_sky_line[i];
+	for (i = 0; i < SKY_MASK_BINS; i++) {
+		if (g_sky_line[i] > SKY_UNSEEN)
+			last = g_sky_line[i];
+		filled[i] = last;
+	}
+
+	if (!g_sky_mask)
+		my_glGenTextures(1, &g_sky_mask);
+	real_glActiveTexture(GL_TEXTURE0 + SKY_MASK_UNIT);
+	real_glBindTexture(GL_TEXTURE_2D, g_sky_mask);
+	real_glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, SKY_MASK_BINS, 1, 0, GL_RED, GL_FLOAT, filled);
+	real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	real_glActiveTexture(g_active_unit);
+}
+
+static void sky_context_lost(void)
+{
+	memset(g_sky_face, 0, sizeof g_sky_face);
+	g_sky_mask = 0;
+	g_sky_mask_valid = FALSE;
+}
+
+/* Tells sprite.fsh where the face about to be drawn sits, or that it isn't one to draw over. */
+static void sky_face_send(const sky_face *f)
+{
+	GLuint lut = post_sky_texture();
+	BOOL on = f && f->placed && g_sky_mask_valid && lut && g_cfg_enabled;
+
+	if (!my_glProgramUniform1i || g_loc_sky_face_on < 0)
+		return;
+	my_glProgramUniform1i(g_sprite_prog, g_loc_sky_face_on, on);
+	if (!on)
+		return;
+	my_glProgramUniformMatrix4fv(g_sprite_prog, g_loc_sky_face, 1, 0, f->place);
+	my_glProgramUniform3fv(g_sprite_prog, g_loc_sky_sun, 1, g_sun_world);
+	real_glActiveTexture(GL_TEXTURE0 + SKY_LUT_UNIT);
+	real_glBindTexture(GL_TEXTURE_2D, lut);
+	real_glActiveTexture(GL_TEXTURE0 + SKY_MASK_UNIT);
+	real_glBindTexture(GL_TEXTURE_2D, g_sky_mask);
+	real_glActiveTexture(g_active_unit);
+}
+
+/* Called before each sky draw. A face whose texture changed starts the whole mask again. */
+static void sky_face_drawn(GLuint start, GLuint end)
+{
+	int slot = g_sky_draws++, i, sides = 0;
+	GLuint tex = g_unit_tex[0];
+	sky_face *f;
+	float *p;
+
+	if (slot >= SKY_MAX_DRAWS || end != start + 3 || tex >= MAX_IDS || !real_glGetTexImage ||
+	    !my_glGetAttribLocation || !my_glGetBufferSubData || g_tex[tex].w <= 0 || g_tex[tex].h <= 0) {
+		sky_face_send(NULL);
+		return;
+	}
+	f = &g_sky_face[slot];
+	if (f->tex == tex && f->uploads == g_tex[tex].uploads) {
+		sky_face_send(f);
+		return;
+	}
+
+	/* A face that was read before has changed: a new sky, so every face is read again. */
+	if (f->tex) {
+		memset(g_sky_face, 0, sizeof g_sky_face);
+		g_sky_mask_valid = FALSE;
+	}
+	for (i = 0; i < SKY_MAX_DRAWS && !g_sky_face[i].tex; i++)
+		;
+	if (i == SKY_MAX_DRAWS)
+		for (i = 0; i < SKY_MASK_BINS; i++)
+			g_sky_line[i] = SKY_UNSEEN;
+	f->tex = tex;
+	f->uploads = g_tex[tex].uploads;
+
+	/* A side face's centre is level with the camera, the top's is straight up. */
+	f->placed = sky_face_place(f, start);
+	p = f->place;
+	f->side = f->placed && fabsf(p[1] + p[5] + p[9] + p[13]) <
+		  0.5f * (float)sqrt((p[0] + p[4] + p[8] + p[12]) * (p[0] + p[4] + p[8] + p[12]) +
+				     (p[2] + p[6] + p[10] + p[14]) * (p[2] + p[6] + p[10] + p[14]));
+	if (f->side && !sky_face_read(f, tex)) {
+		f->side = FALSE;
+		log_msg("sky: face %d (texture %u) couldn't be read", slot, tex);
+	}
+
+	for (i = 0; i < SKY_MAX_DRAWS; i++)
+		sides += g_sky_face[i].tex && g_sky_face[i].side;
+	if (f->side && sides == 4) {
+		sky_mask_upload();
+		g_sky_mask_valid = TRUE;
+		log_msg("sky: mask made from 4 side faces at frame %u", g_frame);
+	}
+	sky_face_send(f);
+}
+
 static void fbo_destroy(void)
 {
 	if (!g_fbo)
@@ -2119,6 +2576,7 @@ static void run_post(void)
 {
 	static const float default_fog[3] = { 0.8f, 0.85f, 0.9f };
 	uni_entry *fog = model_uniform("u_fog_color");
+	float sky_sun_view[3];
 	post_state s;
 
 	g_post_done = TRUE;
@@ -2129,6 +2587,12 @@ static void run_post(void)
 	s.h = g_fbo_h;
 	s.projection = g_proj_value[g_terrain_prog];
 	s.sun_view = g_light_view;
+	world_to_view(sky_sun_view, g_sun_world, g_prev_inv_view);
+	s.sky_sun_view = sky_sun_view;
+	s.sun_world = g_sun_world;
+	s.moon_world = g_moon_world;
+	s.direct_loss = g_direct_loss;
+	s.ambient_loss = g_ambient_loss;
 	s.view_up = g_view_up;
 	s.fog_color = fog && fog->data ? fog->data : default_fog;
 	s.shadow_matrix = g_shadow_receiver_valid ? g_shadow_receiver : NULL;
@@ -2148,9 +2612,11 @@ static void run_post(void)
 	s.weather = g_cfg_weather;
 	s.weather_amount = g_cfg_weather_amount / 100.0f;
 	s.wet = weather_wet();
-	s.night = g_cfg_time_of_day / 100.0f;
+	s.night = g_night;
 	s.motion = g_frame_seconds > 0.0f ? g_cfg_motion_blur / 100.0f * BLUR_SHUTTER / g_frame_seconds : 0.0f;
 	s.blur_near = g_frame_trimmed ? BLUR_NEAR_FIRST : BLUR_NEAR_CHASE;
+	s.sky_mask = g_sky_mask_valid ? g_sky_mask : 0;
+	s.sky_mask_view = g_cfg_sky_mask_view;
 	mat_mul(s.reproject, s.projection, g_view_step);
 	s.program = g_cur_prog;
 	s.vao = g_cur_vao;
@@ -2259,6 +2725,7 @@ static const char *const g_weather_names[] = { "Clear", "Cloudy", "Rain", "Storm
 #define CHOICE(tab, label, key, var, list) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], TRUE, NULL, tab }
 #define NAMED_CHOICE(tab, label, key, var, list, names, restart) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], restart, names, tab }
 #define TOGGLE(tab, label, key, var, restart) { label, key, UI_TOGGLE, &var, 0, 0, 0, NULL, 0, restart, NULL, tab }
+#define CLOCK_SLIDER(tab, label, key, var, lo, hi) { label, key, UI_SLIDER, &var, lo, hi, 1, NULL, 0, FALSE, NULL, tab, UI_SHOW_CLOCK }
 
 static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_LOOK, "Haze", L"fog", g_cfg_fog, 0, 300, 5),
@@ -2274,11 +2741,10 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_LOOK, "Lens Flare", L"lens_flare", g_cfg_lens_flare, 0, 200, 5),
 	TOGGLE(UI_TAB_LOOK, "Goggles in First Person", L"goggles", g_cfg_goggles, FALSE),
 
-	SLIDER(UI_TAB_WEATHER, "Day to Night", L"time_of_day", g_cfg_time_of_day, 0, 100, 5),
+	CLOCK_SLIDER(UI_TAB_WEATHER, "Time of Day", L"clock", g_cfg_clock, CLOCK_TRACK, CLOCK_STEPS),
 	NAMED_CHOICE(UI_TAB_WEATHER, "Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names, FALSE),
 	SLIDER(UI_TAB_WEATHER, "Weather Strength", L"weather_amount", g_cfg_weather_amount, 0, 100, 5),
 	SLIDER(UI_TAB_WEATHER, "Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
-	SLIDER(UI_TAB_WEATHER, "Sun Height (0 Track)", L"sun_height", g_cfg_sun_height, 0, 90, 1),
 	SLIDER(UI_TAB_WEATHER, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
 	SLIDER(UI_TAB_WEATHER, "Shadow Distance", L"shadow_range", g_cfg_shadow_range, 20, 500, 10),
 
@@ -2635,6 +3101,7 @@ HOOK(void, glTexImage2D, (GLenum target, GLint level, GLint internal, GLsizei w,
 		g_tex[g_bound_tex].w = w;
 		g_tex[g_bound_tex].h = h;
 		g_tex[g_bound_tex].internal = internal;
+		g_tex[g_bound_tex].uploads++;
 	}
 	real_glTexImage2D(target, level, internal, w, h, border, format, type, pixels);
 }
@@ -2704,6 +3171,7 @@ HOOK(BOOL, wglDeleteContext, (HGLRC rc))
 		g_main_rc = NULL;
 		g_fbo = 0;
 		g_aniso = 1.0f;
+		sky_context_lost();
 		post_context_lost();
 		ui_context_lost();
 	}
@@ -3003,6 +3471,8 @@ static void program_refresh(GLuint program)
 		g_loc_shadow_map[program] = real_glGetUniformLocation(program, "u_shadow_map");
 		g_loc_shadow_on[program] = real_glGetUniformLocation(program, "u_shadow_on");
 		g_loc_night[program] = real_glGetUniformLocation(program, "u_night");
+		g_loc_direct_loss[program] = real_glGetUniformLocation(program, "u_direct_loss");
+		g_loc_ambient_loss[program] = real_glGetUniformLocation(program, "u_ambient_loss");
 		g_loc_shadow_pass[program] = real_glGetUniformLocation(program, "u_shadow_pass");
 		g_loc_view_up[program] = real_glGetUniformLocation(program, "u_view_up");
 		g_loc_shadow_near_matrix[program] = real_glGetUniformLocation(program, "u_shadow_near_matrix");
@@ -3030,6 +3500,13 @@ static void program_refresh(GLuint program)
 		} else if (role && !strcmp(role, "sprite")) {
 			g_sprite_prog = program;
 			g_sprite_mode = -1;
+			g_loc_sky_face_on = real_glGetUniformLocation(program, "u_sky_face_on");
+			g_loc_sky_face = real_glGetUniformLocation(program, "u_sky_face");
+			g_loc_sky_sun = real_glGetUniformLocation(program, "u_sky_sun");
+			if (my_glProgramUniform1i) {
+				my_glProgramUniform1i(program, real_glGetUniformLocation(program, "u_sky"), SKY_LUT_UNIT);
+				my_glProgramUniform1i(program, real_glGetUniformLocation(program, "u_sky_mask"), SKY_MASK_UNIT);
+			}
 		} else if (role && !strcmp(role, "reflection")) {
 			g_reflection_prog = program;
 		}
@@ -3180,10 +3657,41 @@ static int pack_int(const wchar_t *key, int fallback)
 	return value >= 0 ? value : fallback;
 }
 
+/*
+ Time of Day replaced Day to Night and Sun Height. Without a setting of its own yet, a
+ night becomes midnight and a raised sun the morning hour that puts it that high.
+*/
+static int clock_from_old_settings(void)
+{
+	wchar_t path[MAX_PATH], section[80];
+	int night, height, q;
+	float noon = 90.0f - LATITUDE + DECLINATION;
+
+	/* Read without writing, so the old keys aren't added to new ini files. */
+	pack_section(section, 80);
+	log_path(path, L"mxs-shaders.ini");
+	night = GetPrivateProfileIntW(section, L"time_of_day", 0, path);
+	height = GetPrivateProfileIntW(section, L"sun_height", 0, path);
+
+	if (night >= 50)
+		return 1;
+	if (height <= 0)
+		return CLOCK_TRACK;
+	if (height >= noon)
+		return 1 + 12 * 4;
+	for (q = 12 * 4; q > 0; q--) {
+		float h = (q * 0.25f - 12.0f) * 15.0f * RADIANS, lat = LATITUDE * RADIANS, dec = DECLINATION * RADIANS;
+
+		if ((float)asin(sin(lat) * sin(dec) + cos(lat) * cos(dec) * cos(h)) < height * RADIANS)
+			return 1 + q + 1;
+	}
+	return CLOCK_TRACK;
+}
+
 /* Everything hot reload can pick up without rebuilding GL objects. */
 static void load_live_settings(void)
 {
-	g_cfg_time_of_day = pack_int(L"time_of_day", 0);
+	g_cfg_clock = min(pack_int(L"clock", clock_from_old_settings()), CLOCK_STEPS);
 	g_cfg_fog = pack_int(L"fog", 10);
 	g_cfg_parallax = pack_int(L"parallax", 200);
 	g_cfg_motion_blur = pack_int(L"motion_blur", 10);
@@ -3195,7 +3703,6 @@ static void load_live_settings(void)
 	g_cfg_texture_sharpness = pack_int(L"texture_sharpness", 0);
 	g_cfg_bloom = pack_int(L"bloom", 100);
 	g_cfg_lens_flare = pack_int(L"lens_flare", 50);
-	g_cfg_sun_height = pack_int(L"sun_height", 0);
 	g_cfg_sun_turn = pack_int(L"sun_turn", 0);
 	g_cfg_goggles = ini_int(L"goggles", 0);
 	g_cfg_weather = min(max(ini_int(L"weather", WEATHER_CLEAR), WEATHER_CLEAR), WEATHER_SNOW);
@@ -3711,11 +4218,18 @@ HOOK(void, glFramebufferTexture2D, (GLenum target, GLenum attachment, GLenum tex
 
 HOOK(void, glDrawRangeElements, (GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices))
 {
+	BOOL sky = g_sprite_mode == SPRITE_SKY && g_cur_fb == 0 && g_cur_prog == g_sprite_prog && count == 6;
+
 	count_draw();
 	cap("drawrangeelements mode=%x start=%u end=%u count=%d type=%x fb=%u prog=%u", mode, start, end, count, type, g_cur_fb, g_cur_prog);
+	if (sky)
+		sky_face_drawn(start, end);
 	rec(REC_DRAWRANGE, mode, count, type, start, shadow_draw_kind(), (size_t)indices, &end, sizeof end);
 	if (!hud_draw_hidden())
 		real_glDrawRangeElements(mode, start, end, count, type, indices);
+	/* Only the faces themselves are drawn over. */
+	if (sky)
+		sky_face_send(NULL);
 }
 
 typedef struct {
@@ -3819,6 +4333,7 @@ static void load_config(void)
 	g_cfg_enabled = ini_int(L"enabled", 1);
 	g_cfg_debug = ini_int(L"debug", 0);
 	g_cfg_gl_debug = GetPrivateProfileIntW(L"mxs-shaders", L"gl_debug", g_cfg_debug, path);
+	g_cfg_sky_mask_view = GetPrivateProfileIntW(L"mxs-shaders", L"sky_mask_view", 0, path);
 	g_cfg_shadows = GetPrivateProfileIntW(L"mxs-shaders", L"shadows", 1, path);
 	g_cfg_shadow_size = ini_int(L"shadow_size", 8192);
 	g_cfg_post = GetPrivateProfileIntW(L"mxs-shaders", L"post", 1, path);
@@ -3865,6 +4380,7 @@ void hooks_init(void)
 	STATIC(glTexImage2D);
 	STATIC(glReadPixels);
 	STATIC(glFinish);
+	STATIC(glGetTexImage);
 #ifdef _WIN32
 	STATIC(wglCreateContext);
 	STATIC(wglDeleteContext);
@@ -3897,6 +4413,7 @@ void hooks_glx_context_destroyed(HGLRC rc)
 		g_main_rc = NULL;
 		g_fbo = 0;
 		g_aniso = 1.0f;
+		sky_context_lost();
 		post_context_lost();
 		ui_context_lost();
 	}

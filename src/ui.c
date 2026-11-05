@@ -694,7 +694,9 @@ static void item_row(int index, float x, float y, float label_w, float value_w, 
 		text(x + row * 0.2f + text_width(it->label), y, row, "*", ASTERISK);
 
 	if (it->kind == UI_SLIDER) {
-		float number_w = row * 2.4f, bar_x = x + label_w + number_w, bar_w = value_w - number_w;
+		/* Wide enough for a clock slider's words, the same for all so the bars line up. */
+		float number_w = max(row * 2.4f, max(text_width("Track"), text_width("00:00")) + row * 0.4f);
+		float bar_x = x + label_w + number_w, bar_w = value_w - number_w;
 		float t = (float)(*it->value - it->min) / (it->max - it->min);
 		if (hover && click)
 			g_dragging = index;
@@ -708,7 +710,12 @@ static void item_row(int index, float x, float y, float label_w, float value_w, 
 		}
 
 		label_box(x + label_w, y, number_w, row);
-		sprintf_s(value, sizeof value, "%d", *it->value);
+		if (it->show == UI_SHOW_CLOCK && *it->value <= 0)
+			strcpy_s(value, sizeof value, "Track");
+		else if (it->show == UI_SHOW_CLOCK)
+			sprintf_s(value, sizeof value, "%02d:%02d", (*it->value - 1) / 4, (*it->value - 1) % 4 * 15);
+		else
+			sprintf_s(value, sizeof value, "%d", *it->value);
 		text(x + label_w + number_w - text_width(value) - row * 0.2f, y, row, value, TEXT_LIGHT);
 
 		button_box(bar_x, y, bar_w, row, active);
