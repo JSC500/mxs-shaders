@@ -65,9 +65,11 @@ void main()
 		*/
 		float d = max(dot(view_ray(), normalize(u_sun_view)), 0.0);
 
-		color.rgb += SUN_GLOW * (0.1 * pow(d, 6.0) + 0.1 * pow(d, 32.0)) * (1.0 - u_night) * sun_through_clouds(u_sun_view);
+		color.rgb += SUN_GLOW * (0.1 * pow(d, 6.0) + 0.1 * pow(d, 32.0)) * light_tint() * sun_through_clouds(u_sun_view);
 		if (u_hdr != 0)
 			color.rgb = scene_from_gamma(color.rgb);
+		/* The painted skybox is a day picture: with the dynamic sky off it takes the light the time of day leaves. */
+		color.rgb *= painted_light();
 	} else if (u_sprite_mode == 2) {
 		/* Dust in shade shouldn't glow as if it were in the sun. */
 		float z = -u_projection[3][2] / (gl_FragCoord.z * 2.0 - 1.0 + u_projection[2][2]);

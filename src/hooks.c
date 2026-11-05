@@ -2219,6 +2219,7 @@ static float g_sky_line[SKY_MASK_BINS];	/* sine of the skyline's elevation */
 static GLuint g_sky_mask;
 static BOOL g_sky_mask_valid;
 static int g_cfg_sky_mask_view;
+static int g_cfg_dynamic_sky;	/* 0 keeps the game's painted skybox */
 static GLint g_loc_sky_face_on = -1, g_loc_sky_face = -1, g_loc_sky_sun = -1, g_loc_cloud_view = -1, g_loc_cloud_scale = -1;
 #define CLOUDS_UNIT 21	/* post.c's latest clouds */
 
@@ -2414,7 +2415,7 @@ static void sky_context_lost(void)
 static void sky_face_send(const sky_face *f)
 {
 	GLuint lut = post_sky_texture(), clouds;
-	BOOL on = f && f->placed && g_sky_mask_valid && lut && g_cfg_enabled;
+	BOOL on = f && f->placed && g_sky_mask_valid && lut && g_cfg_enabled && g_cfg_dynamic_sky;
 	float cloud_view[16], cloud_scale[3] = { 0.0f, 0.0f, 0.0f };
 
 	if (!my_glProgramUniform1i || g_loc_sky_face_on < 0)
@@ -2637,7 +2638,8 @@ static void run_post(void)
 	s.night = g_night;
 	s.motion = g_frame_seconds > 0.0f ? g_cfg_motion_blur / 100.0f * BLUR_SHUTTER / g_frame_seconds : 0.0f;
 	s.blur_near = g_frame_trimmed ? BLUR_NEAR_FIRST : BLUR_NEAR_CHASE;
-	s.sky_mask = g_sky_mask_valid ? g_sky_mask : 0;
+	/* Without the dynamic sky the post passes treat the painted skybox as they did before it. */
+	s.sky_mask = g_sky_mask_valid && g_cfg_dynamic_sky ? g_sky_mask : 0;
 	s.sky_mask_view = g_cfg_sky_mask_view;
 	mat_mul(s.reproject, s.projection, g_view_step);
 	s.program = g_cur_prog;
@@ -2766,6 +2768,7 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_LOOK, "Lens Flare", L"lens_flare", g_cfg_lens_flare, 0, 200, 5),
 	TOGGLE(UI_TAB_LOOK, "Goggles in First Person", L"goggles", g_cfg_goggles, FALSE),
 
+	TOGGLE(UI_TAB_WEATHER, "Dynamic Sky", L"dynamic_sky", g_cfg_dynamic_sky, FALSE),
 	CLOCK_SLIDER(UI_TAB_WEATHER, "Time of Day", L"clock", g_cfg_clock, CLOCK_TRACK, CLOCK_STEPS),
 	NAMED_CHOICE(UI_TAB_WEATHER, "Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names, FALSE),
 	SLIDER(UI_TAB_WEATHER, "Weather Strength", L"weather_amount", g_cfg_weather_amount, 0, 100, 5),
@@ -3750,6 +3753,7 @@ static void load_live_settings(void)
 		WritePrivateProfileStringW(L"mxs-shaders", L"weather", L"0", path);
 	}
 	g_cfg_cloud_quality = min(max(ini_int(L"cloud_quality", CLOUDS_MEDIUM), CLOUDS_OFF), CLOUDS_HIGH);
+	g_cfg_dynamic_sky = ini_int(L"dynamic_sky", 1) != 0;
 	g_cfg_wet = pack_int(L"wet", 0);
 	g_cfg_hide_hud = ini_int(L"hide_hud", 0);
 	g_cfg_hide_cursor = ini_int(L"hide_cursor", 1);
