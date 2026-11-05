@@ -23,5 +23,6 @@ cl /nologo /O2 /MT /W3 /D_CRT_SECURE_NO_WARNINGS /Fobuild\gen\ /Isrc src\proxy.c
 echo Built build\opengl32.dll
 
 rem Deploy to the dev copy of the game and the pack folder when they exist.
-if exist "%LOCALAPPDATA%\mxs-shaders\game" copy /y build\opengl32.dll "%LOCALAPPDATA%\mxs-shaders\game\" >nul
-xcopy /y /s /i /q shaderpacks "%LOCALAPPDATA%\mxs-shaders\shaderpacks" >nul
+set "DATA=%LOCALAPPDATA%\MX Simulator\mxs-shaders"
+if exist "%DATA%\game" copy /y build\opengl32.dll "%DATA%\game\" >nul
+xcopy /y /s /i /q shaderpacks "%DATA%\shaderpacks" >nul

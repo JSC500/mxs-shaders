@@ -3,7 +3,9 @@
 /* The in-game settings panel, styled after the game's own menus. */
 
 enum { UI_SLIDER, UI_CHOICE, UI_TOGGLE };
+enum { UI_SHOW_NUMBER, UI_SHOW_CLOCK };	/* a clock slider's 0 is "Track", then quarter hours from 00:00 */
 enum { UI_TAB_LOOK, UI_TAB_WEATHER, UI_TAB_DISPLAY, UI_TABS };
+#define UI_TAB_TOP UI_TABS	/* not on a page: under the shader pack, always showing */
 
 typedef struct {
 	const char *label;
@@ -16,6 +18,7 @@ typedef struct {
 	BOOL restart;		/* only takes effect on the next start */
 	const char *const *names;	/* choices shown by name, else as numbers */
 	int tab;		/* which page of the panel it's on */
+	int show;		/* how a slider's value is written */
 } ui_item;
 
 /* The GL state to leave behind, none of it goes through the hooks. */

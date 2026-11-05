@@ -7,7 +7,7 @@
 #endif
 #include <stdio.h>
 
-/* log.c: everything goes to %LOCALAPPDATA%\mxs-shaders, the game folder is usually read-only.
+/* log.c: everything goes to %LOCALAPPDATA%\MX Simulator\mxs-shaders, the game folder is usually read-only.
  log_linux.c: the same in $XDG_DATA_HOME/mxs-shaders, normally ~/.local/share/mxs-shaders. */
 void log_init(void);
 void log_msg(const char *fmt, ...);

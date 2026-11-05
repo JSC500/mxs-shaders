@@ -4,10 +4,10 @@ A shader pack is a folder of GLSL files that replaces how the game looks. You do
 
 ## Quick start
 
-The paths below are for Windows. On Linux, `%LOCALAPPDATA%\mxs-shaders` is `~/.local/share/mxs-shaders`, and everything else is the same, packs included.
+The paths below are for Windows. On Linux, `%LOCALAPPDATA%\MX Simulator\mxs-shaders` is `~/.local/share/mxs-shaders`, and everything else is the same, packs included.
 
-1. Make a folder in `%LOCALAPPDATA%\mxs-shaders\shaderpacks`, for example `my-pack`.
-2. Set `pack=my-pack` and `debug=1` in `%LOCALAPPDATA%\mxs-shaders\mxs-shaders.ini` and restart the game.
+1. Make a folder in `%LOCALAPPDATA%\MX Simulator\mxs-shaders\shaderpacks`, for example `my-pack`.
+2. Set `pack=my-pack` and `debug=1` in `%LOCALAPPDATA%\MX Simulator\mxs-shaders\mxs-shaders.ini` and restart the game.
 3. Copy the file you want to change into your folder. They're in `default-pack.zip` on the Releases page, or in `shaderpacks/default` in this repository.
 4. Edit it, press **F8** in the game and click **Reload Current Shader**. The button only appears with `debug=1`.
 
@@ -15,9 +15,9 @@ A pack only needs the files it changes. Anything it doesn't have comes from the 
 
 To use a pack someone else made, put its folder in `shaderpacks`, set `pack=` to the folder's name, and restart. Set `pack=default` to go back. You can also pick a pack on the Shader Pack row of the F8 panel. It lists the folders in `shaderpacks` and switches straight away.
 
-If a shader doesn't compile, the mod keeps what was running and writes the error to `%LOCALAPPDATA%\mxs-shaders\mxs-shaders.log`.
+If a shader doesn't compile, the mod keeps what was running and writes the error to `%LOCALAPPDATA%\MX Simulator\mxs-shaders\mxs-shaders.log`.
 
-Set `debug=1` in `mxs-shaders.ini` to save the game's own shaders to `%LOCALAPPDATA%\mxs-shaders\shaders`. They show what each stage receives. Don't publish those files, they belong to the game.
+Set `debug=1` in `mxs-shaders.ini` to save the game's own shaders to `%LOCALAPPDATA%\MX Simulator\mxs-shaders\shaders`. They show what each stage receives. Don't publish those files, they belong to the game.
 
 Each pack keeps its own slider values. To start yours somewhere other than the mod's defaults, add a `settings.ini` with a `[settings]` section and the keys from the settings table in the README, such as `dof=0`. What a player sets in the game takes priority.
 
@@ -48,6 +48,8 @@ These full-screen passes run in order after the world is drawn. To skip an effec
 | `post_shafts.fsh` | Sun shafts, at half resolution, blurred by `post_ao_blur.fsh` |
 | `post_bloom_down.fsh`, `post_bloom_up.fsh` | Bloom |
 | `post_exposure.fsh` | Brightness in red and focus distance in green, 1×1 pixel |
+| `post_sky.fsh` | The clear sky in every direction, 256×128, from `sky.glsl`. `sprite.fsh` draws it in the next frame's skybox |
+| `post_clouds.fsh` | Volumetric clouds for a view a little wider than the screen, at the Cloud Quality's size, blended with the last frame. Light in rgb, how much of the sky behind shows in alpha. `sprite.fsh` draws them in the next frame's skybox |
 | `post_final.fsh` | Combines occlusion, atmosphere and bloom, still in linear light |
 | `post_lens.fsh` | Motion blur, depth of field, tone mapping and grading |
 
@@ -64,7 +66,12 @@ These uniforms only need declaring to use them.
 | `u_shadow_matrix`, `u_shadow_near_matrix` | world shaders | View space to each map |
 | `u_shadow_on` | world shaders | Nonzero when the maps are valid |
 | `u_hdr` | world shaders | Nonzero in a race, where post-processing finishes the image. Otherwise the shader must tone map itself |
-| `u_night` | world shaders, `post_ao.fsh`, `post_final.fsh`, `post_lens.fsh` | The `time_of_day` setting, 1 at 100. Fade sun effects out with it. At 1 the shadow maps aren't drawn and `u_shadow_on` is 0 |
+| `u_night` | world shaders, `post_ao.fsh`, `post_final.fsh`, `post_lens.fsh` | 0 by day, rising through twilight to 1 when the sun is 12 degrees down, from the Time of Day setting. For stars and the like: the shadow maps keep running at night, lit by the moon |
+| `u_direct_loss`, `u_ambient_loss` | world shaders, `post_final.fsh` | How much of the game's sun and sky light the Time of Day takes away, per colour. 0 leaves the game's light. `common.glsl`'s `sun_boost()`, `light_tint()` and `sky_light()` apply them, so a pack that uses those gets dusk and night for free |
+| `u_sky`, `u_sky_mask`, `u_sky_sun` | sprite, `post_final.fsh` | The clear sky in every direction, the skybox's skyline, and the real sun in world space. `sky.glsl` reads them |
+| `u_cloud_cover` | world shaders, post passes | The Cloud Cover setting, 1 at 100. `common.glsl`'s `cloud_cover()` raises it to an overcast in rain and snow, and `cloud_density()` is the cloud field the cloud shadows and the volumetric clouds share |
+| `u_clouds`, `u_cloud_view`, `u_cloud_scale` | sprite | The last volumetric clouds, the view they were drawn from, and its scale, with z 0 when there are none. `sky.glsl`'s `clouds_at()` reads them by direction |
+| `u_sky_face_on`, `u_sky_face` | sprite | Set for each skybox face once the skybox has been read: the face's corners and texture span, so `sprite.fsh` can draw the atmosphere above the skyline |
 | `u_parallax` | terrain | The `parallax` setting |
 | `u_view_up` | model | World up in view space |
 | `u_sprite_mode` | sprite | 0 normal, 1 sky, 2 particle |

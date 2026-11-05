@@ -111,7 +111,7 @@ float low_sun()
 {
 	float height = dot(normalize(u_sun), normalize(u_up));
 
-	return (1.0 - smoothstep(LOW_SUN_FULL, LOW_SUN_START, height)) * u_sun_moved * (1.0 - u_night);
+	return (1.0 - smoothstep(LOW_SUN_FULL, LOW_SUN_START, height)) * smoothstep(-0.05, 0.0, height) * u_sun_moved * (1.0 - u_night);
 }
 
 vec3 grade(vec3 c)
@@ -137,9 +137,11 @@ vec3 lens_flare(vec2 uv)
 	const vec3 ghost_tint[4] = vec3[4](vec3(0.4, 0.7, 1.0), vec3(1.0, 0.6, 0.3), vec3(0.5, 1.0, 0.6), vec3(0.8, 0.5, 1.0));
 	const float ghost_at[4] = float[4](0.6, 1.25, 1.6, 2.2);	/* 1 is the middle, 2 the sun's mirror image */
 	const float ghost_size[4] = float[4](0.05, 0.11, 0.035, 0.16);
-	float seen = texture(u_exposure, vec2(0.5)).b * u_flare * (1.0 - u_night) * sun_through_clouds(u_sun);
-	float aspect = u_texel.y / u_texel.x;
 	vec3 sun = normalize(u_sun), c;
+	/* A setting sun goes behind the painted ground, which sits at the sky's depth. */
+	float height = dot(sun, normalize(u_up));
+	float seen = texture(u_exposure, vec2(0.5)).b * u_flare * (1.0 - u_night) * sun_through_clouds(u_sun) * smoothstep(-0.005, 0.02, height);
+	float aspect = u_texel.y / u_texel.x;
 	vec2 at, d;
 	float r, angle;
 	int i;

@@ -10,9 +10,16 @@ uniform float u_proj_a, u_proj_b, u_fx, u_fy;
 uniform float u_camera_height;	/* above the ground around the rider */
 uniform float u_fog_amount;	/* the fog setting in mxs-shaders.ini, 1 at 100 */
 uniform float u_sharpen, u_bloom_amount;	/* the settings, 1 at 100 */
-uniform vec3 u_up, u_sun, u_fog_color;
+uniform vec3 u_up, u_sun, u_fog_color;	/* u_sun is where the sun really is, in view space */
+uniform vec3 u_light;		/* the light the scene is shaded with, the moon at night, in view space */
+uniform int u_sky_mask_on;	/* 0 until the skybox has been read */
+uniform int u_sky_mask_view;	/* debugging: sky_mask_view in mxs-shaders.ini */
+uniform vec3 u_moon;		/* world space, below the horizon too */
+uniform int u_clouds_on;	/* post_clouds.fsh drew this frame's clouds, the sky already has them */
+uniform float u_cloud_margin;	/* how much wider than the screen they were drawn */
 
 #include "common.glsl"
+#include "sky.glsl"
 
 const float AO_STRENGTH = 0.85;
 const float CONTACT_STRENGTH = 0.6;
@@ -59,8 +66,7 @@ const float RAIN_HAZE = 3.0, SNOW_HAZE = 4.0;	/* times the haze, at full strengt
 const float STAR_GRID = 350.0;		/* cells per radian */
 const float STAR_DENSITY = 0.004;	/* of the cells that hold a star */
 const float STAR_BRIGHT = 2.0;
-const vec3 MOON_DIR = normalize(vec3(-0.45, 0.5, -0.74));	/* world space, y up */
-const float MOON_RADIUS = 0.016, MOON_BRIGHT = 4.0;
+const float MOON_RADIUS = 0.016, MOON_BRIGHT = 4.0;	/* larger than the real one, which reads as a dot */
 
 const float LIGHTNING_EVERY = 8.0;	/* seconds, each has one chance of a strike */
 const float LIGHTNING_BRIGHT = 1.5;
@@ -113,32 +119,46 @@ float lightning_bolt(vec3 dir, float slot)
 	return smoothstep(0.0045, 0.0015, abs(a)) + smoothstep(0.05, 0.0, abs(a)) * 0.15;
 }
 
-/* The sky behind the scene: clouds, the overcast of bad weather, and at night stars and a moon. */
-vec3 weather_sky(vec3 c, vec3 dir, float flash, float slot)
+/*
+ The sky behind the scene: clouds, the overcast of bad weather, and at night stars and a moon.
+ open is how much of the pixel is sky, not scenery painted into the skybox.
+*/
+vec3 weather_sky(vec3 c, vec3 dir, float flash, float slot, float open)
 {
 	float l = dot(c, vec3(0.2126, 0.7152, 0.0722)), gloom = weather_gloom(), density = 0.0;
-	float night = smoothstep(0.5, 0.9, u_night) * smoothstep(0.0, 0.08, dir.y);
+	float night = smoothstep(0.5, 0.9, u_night) * smoothstep(0.0, 0.08, dir.y) * open;
 	vec3 camera = to_world(vec3(0.0));
 
-	if (dir.y > 0.0)
-		density = cloud_density(camera.xz + dir.xz / max(dir.y, 0.02) * (CLOUD_HEIGHT - camera.y)) * smoothstep(0.0, 0.12, dir.y);
-	c = mix(c, vec3(l) * mix(1.15, 0.4, gloom), density * 0.9);
+	/* Volumetric clouds are in the sky already, what they let through hides what's behind. */
+	if (u_clouds_on != 0)
+		density = (1.0 - texture(u_clouds, (v_uv - 0.5) / u_cloud_margin + 0.5).a) * open;
+	else if (dir.y > 0.0)
+		density = cloud_density(camera.xz + dir.xz / max(dir.y, 0.02) * (CLOUD_HEIGHT - camera.y)) * smoothstep(0.0, 0.12, dir.y) * open;
+	if (u_clouds_on == 0)
+		c = mix(c, vec3(l) * mix(1.15, 0.4, gloom), density * 0.9);
 	c = mix(c, vec3(l) * mix(1.0, 0.55, gloom), gloom * 0.5);
 
 	if (night > 0.0) {
 		vec2 a = vec2(atan(dir.z, dir.x), asin(clamp(dir.y, -1.0, 1.0))) * STAR_GRID;
 		vec2 cell = floor(a);
 		vec2 f = fract(a) - 0.5 - (vec2(weather_hash(cell + 5.0), weather_hash(cell + 9.0)) - 0.5) * 0.6;
-		float h = weather_hash(cell), star, moon, angle = acos(clamp(dot(dir, MOON_DIR), -1.0, 1.0));
+		float h = weather_hash(cell), star;
 
 		star = step(1.0 - STAR_DENSITY, h) * smoothstep(0.25, 0.0, length(f)) * (0.4 + 0.6 * fract(h * 997.0));
+		c += vec3(star * STAR_BRIGHT) * night * (1.0 - density);
+	}
+
+	/* The moon shows from dusk, before the stars. */
+	if (u_night > 0.0 && dir.y > 0.0) {
+		float angle = acos(clamp(dot(dir, normalize(u_moon)), -1.0, 1.0)), moon;
+
 		moon = (1.0 - smoothstep(MOON_RADIUS * 0.9, MOON_RADIUS, angle)) * (0.75 + 0.25 * weather_fbm(dir.xz * 400.0)) * MOON_BRIGHT;
 		moon += exp(-angle / 0.08) * 0.15;
-		c += (vec3(star * STAR_BRIGHT) + vec3(0.85, 0.9, 1.0) * moon) * night * (1.0 - density);
+		c += vec3(0.85, 0.9, 1.0) * moon * smoothstep(0.1, 0.5, u_night) * open * (1.0 - density);
 	}
 
 	if (flash > 0.0)
-		c += vec3(0.8, 0.85, 1.0) * lightning_bolt(dir, slot) * flash * 20.0;
+		c += vec3(0.8, 0.85, 1.0) * lightning_bolt(dir, slot) * flash * 20.0 * open * (1.0 - density);
 	return c;
 }
 
@@ -182,6 +202,15 @@ vec3 precipitation(vec3 c, vec3 dir, float dist, float flash)
 	return c + RAIN_LIGHT * amount * (1.0 + flash * 4.0);
 }
 
+/*
+ How much of a pixel at depth 1 is open sky, not scenery painted into the skybox.
+ It's worked out for every pixel, because fwidth needs its neighbours.
+*/
+float sky_open(vec3 dir)
+{
+	return u_sky_mask_on != 0 ? skyline_open(dir) : 1.0;
+}
+
 vec3 atmosphere(vec3 c)
 {
 	float depth = texture(u_depth, v_uv).r;
@@ -190,7 +219,8 @@ vec3 atmosphere(vec3 c)
 	float dist = SKY_DISTANCE * length(ray);
 	vec3 dir = normalize(ray);
 	vec2 shafts = texture(u_shafts, v_uv).rg;
-	float climb, thinning, optical, sun, clouds = sun_through_clouds(u_sun);
+	float climb, thinning, optical, sun, clouds = sun_through_clouds(u_light);
+	vec3 light = light_tint();	/* the haze glows with the light that's there, orange low down, faint from the moon */
 
 	if (depth < 1.0)
 		dist = u_proj_b / (depth * 2.0 - 1.0 + u_proj_a) * length(ray);
@@ -200,9 +230,9 @@ vec3 atmosphere(vec3 c)
 	thinning = abs(climb) < 0.001 ? 1.0 : (1.0 - exp(-climb)) / climb;
 	optical = FOG_DENSITY * u_fog_amount * weather_haze() * exp(-u_camera_height / FOG_HEIGHT) * dist * thinning;
 
-	sun = pow(max(dot(dir, normalize(u_sun)), 0.0), 8.0) * (1.0 - u_night) * clouds;
-	c = mix(scene_from_gamma(min(weather_fog_color(), vec3(FOG_MAX_BRIGHT))) + SUN_SCATTER * sun * FOG_SUN, c, exp(-optical));
-	return c + SUN_SCATTER * shafts.r * shafts.g * (SHAFT_AMBIENT + sun) * SHAFT_STRENGTH * (1.0 - u_night) * clouds;
+	sun = pow(max(dot(dir, normalize(u_light)), 0.0), 8.0) * clouds;
+	c = mix(scene_from_gamma(min(weather_fog_color(), vec3(FOG_MAX_BRIGHT))) * (1.0 - u_ambient_loss) + SUN_SCATTER * light * sun * FOG_SUN, c, exp(-optical));
+	return c + SUN_SCATTER * light * shafts.r * shafts.g * (SHAFT_AMBIENT + sun) * SHAFT_STRENGTH * clouds;
 }
 
 void main()
@@ -214,13 +244,20 @@ void main()
 	vec3 ray = vec3(ndc.x / u_fx, ndc.y / u_fy, -1.0);
 	vec3 dir = normalize(to_world_dir(ray));
 	float dist = depth < 1.0 ? u_proj_b / (depth * 2.0 - 1.0 + u_proj_a) * length(ray) : 1e6;
+	float open = sky_open(dir);
 
 	if (u_sharpen > 0.0)
 		c = sharpen(c);
 	c *= mix(1.0, occlusion.r, AO_STRENGTH);
-	c *= mix(1.0, occlusion.g, CONTACT_STRENGTH);
-	if (depth >= 1.0)
-		c = weather_sky(c, dir, flash, slot);
+	/* Contact shadows only take away direct light, which is gone after sunset. */
+	c *= mix(1.0, occlusion.g, CONTACT_STRENGTH * clamp(dot(light_tint(), vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0));
+	/* The atmosphere itself is already there: sprite.fsh drew it in the game's own sky. */
+	if (depth >= 1.0) {
+		c = weather_sky(c, dir, flash, slot, open);
+		/* Magenta is open sky, yellow means the skybox hasn't been read. */
+		if (u_sky_mask_view != 0)
+			c = mix(c, u_sky_mask_on != 0 ? vec3(1.0, 0.0, 1.0) : vec3(1.0, 1.0, 0.0), open * 0.6);
+	}
 	c = atmosphere(c);
 	c = precipitation(c, dir, dist, flash);
 	c *= 1.0 + flash * LIGHTNING_BRIGHT;

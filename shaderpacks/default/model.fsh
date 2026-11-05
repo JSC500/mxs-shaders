@@ -31,20 +31,53 @@ const vec3 GROUND_BOUNCE = vec3(0.38, 0.32, 0.26);
 const float SKY_SHEEN = 0.25;
 const float SHADED_RIDER_AMBIENT = 0.8;
 const float SOLID_ALPHA = 0.97;
+const float CUTOUT_EDGE_MAX = 0.03;	/* the most alpha the soft edge spans around the game's 0.75 cut */
+const float CUTOUT_ALPHA_CHANGE = 0.004;	/* per pixel, more than glass or water's flat alpha */
+const float MIP_ALPHA_GAIN = 0.25;	/* per mip level, keeps distant cut-outs as full as near ones */
+
+/* The mip level the texture is read from, before anisotropic filtering. */
+float mip_level(sampler2D tex, vec2 uv)
+{
+	vec2 size = vec2(textureSize(tex, 0));
+	vec2 dx = dFdx(uv * size), dy = dFdy(uv * size);
+
+	return 0.5 * log2(max(max(dot(dx, dx), dot(dy, dy)), 1e-8));
+}
 
 void main()
 {
 	vec4 tex, s;
 	vec3 n, t, up, light, albedo, lit, sky, ambient;
-	float ndl, sun, power, alpha, hemi, shade, edge;
+	float ndl, sun, power, alpha, hemi, shade, edge, change, coverage, gain, cut;
+	bool cutout;
 	mat3 m;
 
 	tex = texture(u_tex, interp_texcoord);
 	alpha = u_ambient.a * tex.a;
-	/* Around the cut-out edge the alpha becomes coverage, which MSAA turns into a smooth line. */
-	edge = clamp((alpha - 0.75) / max(fwidth(alpha), 0.0001) + 0.5, 0.0, 1.0);
+	change = fwidth(alpha);
+	cutout = change > CUTOUT_ALPHA_CHANGE;
+	/*
+	 Smaller mips average leaves with the gaps around them, so distant crowns fall
+	 under the cut in pinholes that flicker as the camera moves. Raising alpha by
+	 mip level keeps them full. The shadow map keeps the game's own cut.
+	*/
+	gain = 1.0 + max(mip_level(u_tex, interp_texcoord), 0.0) * MIP_ALPHA_GAIN;
+	if (!cutout || u_shadow_pass != 0)
+		gain = 1.0;
+	cut = alpha * gain;
+	/*
+	 Around the cut-out edge the alpha becomes coverage, which MSAA turns into a
+	 smooth line. On distant foliage alpha jumps between neighbouring pixels, and
+	 an edge that wide would thin whole tree crowns until the sky shows through.
+	*/
+	edge = clamp((cut - 0.75) / clamp(change * gain, 0.0001, CUTOUT_EDGE_MAX) + 0.5, 0.0, 1.0);
 	if (edge <= 0.0)
 		discard;
+	/*
+	 The output alpha is both coverage and blend. The game draws a cut-out's leaf
+	 solid from 0.75 up, so only its edge thins it. Glass and water keep theirs.
+	*/
+	coverage = cutout ? edge : min(alpha, edge);
 	if (u_shadow_pass != 0) {
 		if (alpha < 0.75)
 			discard;
@@ -96,7 +129,7 @@ void main()
 	if (power >= 127.875)
 		power = u_shininess;
 	if (ndl > 0.0)
-		lit += to_linear(s.rgb * u_specular_color) * ndl *
+		lit += to_linear(s.rgb * u_specular_color) * light_tint() * ndl *
 		       specular(n, interp_viewer, light, power) * fresnel(n, interp_viewer, 0.04) * 8.0;
 
 	/*
@@ -106,5 +139,5 @@ void main()
 	if (u_nbones != 0)
 		lit += sky * s.rgb * to_linear(u_specular_color) * fresnel(n, interp_viewer, 0.02) * hemi * SKY_SHEEN;
 
-	f_fragcolor = vec4(finish_color(lit, u_fog_color, u_fog_density), min(alpha, edge));
+	f_fragcolor = vec4(finish_color(lit, u_fog_color, u_fog_density), coverage);
 }
