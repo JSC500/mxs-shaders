@@ -30,8 +30,7 @@ To uninstall, delete `opengl32.dll` from the game folder. To remove the settings
 For the game's native Linux build, without Wine or Proton. This build is new, so if something looks wrong, please report it with `~/.local/share/mxs-shaders/mxs-shaders.log`.
 
 1. Download `libmxs-shaders.so` and `mxs-shaders.sh` from the [Releases](../../releases) page, or build them (see [Building](#building)).
-2. Copy both into your game folder, next to `mx` and `mxbin`, and make the script executable: `chmod +x mxs-shaders.sh`.
-3. Start the game with `./mxs-shaders.sh` instead of `./mx`. A desktop shortcut can point at the script too.
+2. Copy both into your game folder, next to `mx` and `mxbin`, and make the script executable: `chmod +x mxs-shaders.sh`.3. Start the game with `./mxs-shaders.sh` instead of `./mx`. A desktop shortcut can point at the script too.
 
 `./mx` still starts the game without the mod. The script loads the library through a link in `~/.local/share/mxs-shaders`, because `LD_PRELOAD` can't handle the space in a folder called `MX Simulator`. If the script isn't in the game folder, tell it where the game is: `MX_HOME="/path/to/MX Simulator" ./mxs-shaders.sh`.
 
@@ -100,7 +99,9 @@ To write your own, see [docs/shader-packs.md](docs/shader-packs.md).
 
 Needs Visual Studio 2022 or its Build Tools with the C++ workload. Run `build.bat` to get `build\opengl32.dll`.
 
-On Linux, install gcc, make and the X11 and FreeType headers (Debian and Ubuntu: `sudo apt install build-essential libx11-dev libfreetype-dev`), then run `make` to get `build/libmxs-shaders.so`. `make test` runs the tests against a stand-in for the game, and needs `xvfb`, `libxtst6` and ImageMagick. Set `debug=1` in `mxs-shaders.ini` for frame captures with **F9**, shader dumps, GL error logging and a **Reload Current Shader** button in the panel.
+On Linux, install gcc, make and the X11 and FreeType headers (Debian and Ubuntu: `sudo apt install build-essential libx11-dev libfreetype-dev`), then run `make` to get `build/libmxs-shaders.so`. `make test` runs the tests against a stand-in for the game, and needs `xvfb`, `libxtst6` and ImageMagick.
+
+On either system, set `debug=1` in `mxs-shaders.ini` for frame captures with **F9**, shader dumps, GL error logging and a **Reload Current Shader** button in the panel.
 
 ## License
 
