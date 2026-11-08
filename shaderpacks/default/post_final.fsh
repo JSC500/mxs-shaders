@@ -22,6 +22,7 @@ uniform float u_cloud_margin;	/* how much wider than the screen they were drawn 
 #include "sky.glsl"
 
 const float AO_STRENGTH = 0.85;
+const float SHADOW_STRENGTH = 1.0;
 const float CONTACT_STRENGTH = 0.6;
 const float BLOOM_STRENGTH = 0.12;
 
@@ -251,6 +252,21 @@ void main()
 	c *= mix(1.0, occlusion.r, AO_STRENGTH);
 	/* Contact shadows only take away direct light, which is gone after sunset. */
 	c *= mix(1.0, occlusion.g, CONTACT_STRENGTH * clamp(dot(light_tint(), vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0));
+	/*
+	 The sun's shadow comes from the map drawn at the end of this frame, from this
+	 frame's own draw calls, so it is never a frame behind the bike. The surface and its
+	 normal are rebuilt from the depth buffer, in view space: that is what the map's
+	 matrix (the same one the game's shaders used to get) takes. At night the light is
+	 the moon's, which the map is lit by too.
+	*/
+	if (depth < 1.0 && u_shadow_on != 0) {
+		vec3 vpos = ray * (u_proj_b / (depth * 2.0 - 1.0 + u_proj_a));
+		vec3 n = normalize(cross(dFdx(vpos), dFdy(vpos)));
+
+		if (dot(n, vpos) > 0.0)
+			n = -n;	/* the lookup pushes along it, so it has to face the camera */
+		c *= mix(1.0, sun_shadow(vpos, n, 0.0), SHADOW_STRENGTH);
+	}
 	/* The atmosphere itself is already there: sprite.fsh drew it in the game's own sky. */
 	if (depth >= 1.0) {
 		c = weather_sky(c, dir, flash, slot, open);

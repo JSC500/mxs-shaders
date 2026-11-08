@@ -184,7 +184,7 @@ static GLint g_exposure_a, g_exposure_b, g_exposure_fx, g_exposure_fy, g_exposur
 static GLuint g_prog_shafts;
 static GLint g_shafts_a, g_shafts_b, g_shafts_fx, g_shafts_fy, g_shafts_matrix, g_shafts_on;
 static GLint g_final_a, g_final_b, g_final_fx, g_final_fy, g_final_height, g_final_up, g_final_sun, g_final_fog, g_final_amount, g_final_night;
-static GLint g_final_sharpen, g_final_bloom, g_final_sky_mask_on, g_final_sky_mask_view;
+static GLint g_final_sharpen, g_final_bloom, g_final_shadow, g_final_shadow_near, g_final_shadow_on, g_final_sky_mask_on, g_final_sky_mask_view;
 static GLuint g_prog_sky, g_tex_sky, g_fbo_sky;	/* the clear sky in every direction */
 static BOOL g_sky_drawn;	/* g_tex_sky holds a sky, not nothing */
 
@@ -276,6 +276,7 @@ static GLuint program(const char *file)
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_exposure"), UNIT_EXPOSURE);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_shafts"), UNIT_SHAFTS);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_shadow_map"), SHADOW_UNIT);
+	gl_Uniform1i(gl_GetUniformLocation(p, "u_shadow_near_map"), SHADOW_UNIT + 1);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_weather_noise"), UNIT_WEATHER_NOISE);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_sky_mask"), UNIT_SKY_MASK);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_sky"), UNIT_SKY);
@@ -552,6 +553,9 @@ static BOOL load_programs(void)
 	g_final_cloud_margin = gl_GetUniformLocation(g_prog_final, "u_cloud_margin");
 	g_final_direct_loss = gl_GetUniformLocation(g_prog_final, "u_direct_loss");
 	g_final_ambient_loss = gl_GetUniformLocation(g_prog_final, "u_ambient_loss");
+	g_final_shadow = gl_GetUniformLocation(g_prog_final, "u_shadow_matrix");
+	g_final_shadow_near = gl_GetUniformLocation(g_prog_final, "u_shadow_near_matrix");
+	g_final_shadow_on = gl_GetUniformLocation(g_prog_final, "u_shadow_on");
 	weather_find(&g_final_weather, g_prog_final);
 
 	g_ao_texel = gl_GetUniformLocation(g_prog_ao, "u_texel");
@@ -723,6 +727,8 @@ static void pass_shafts(const post_state *s)
 	gl_Uniform1f(g_shafts_fx, s->projection[0]);
 	gl_Uniform1f(g_shafts_fy, s->projection[5]);
 	gl_Uniform1i(g_shafts_on, s->shadow_matrix != NULL);
+	if (s->shadow_matrix)
+		gl_UniformMatrix4fv(g_shafts_matrix, 1, 0, s->shadow_matrix);
 	if (s->shadow_matrix)
 		gl_UniformMatrix4fv(g_shafts_matrix, 1, 0, s->shadow_matrix);
 	fullscreen();
@@ -965,6 +971,11 @@ void post_run(const post_state *s)
 	gl_Uniform3f(g_final_fog, s->fog_color[0], s->fog_color[1], s->fog_color[2]);
 	gl_Uniform1f(g_final_sharpen, s->sharpen);
 	gl_Uniform1f(g_final_bloom, s->bloom);
+	gl_Uniform1i(g_final_shadow_on, s->shadow_matrix != NULL ? 1 : 0);
+	if (s->shadow_matrix) {
+		gl_UniformMatrix4fv(g_final_shadow, 1, 0, s->shadow_matrix);
+		gl_UniformMatrix4fv(g_final_shadow_near, 1, 0, s->shadow_near_matrix);
+	}
 	gl_Uniform1i(g_final_sky_mask_on, s->sky_mask != 0);
 	gl_Uniform1i(g_final_sky_mask_view, s->sky_mask_view);
 	if (s->sky_mask)

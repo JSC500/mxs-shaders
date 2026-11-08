@@ -165,9 +165,8 @@ static int g_hdr_on;
 
 static int g_cfg_shadows, g_cfg_shadow_size, g_cfg_shadow_range;
 static BOOL g_shadow_enabled;
-static GLuint g_shadow_fbo[2][SHADOW_CASCADES], g_shadow_tex[2][SHADOW_CASCADES];
-static int g_shadow_write;
-static BOOL g_shadow_frame;	/* this frame's map has been started */
+static GLuint g_shadow_fbo[SHADOW_CASCADES], g_shadow_tex[SHADOW_CASCADES];
+static BOOL g_shadow_frame;	/* this frame draws the 3D scene, so its map can be drawn */
 static BOOL g_shadow_ready;	/* a finished map exists to sample */
 static unsigned char *g_rec, *g_rec_prev;
 static size_t g_rec_used, g_rec_prev_used;
@@ -208,12 +207,12 @@ static float g_light_view[3];	/* the sun everything uses, after the player's cha
 static float g_light_game[3];	/* as the game sent it */
 static BOOL g_have_light;
 static float g_light_matrix[SHADOW_CASCADES][16];	/* world to shadow map */
-static float g_shadow_from_view[SHADOW_CASCADES][16];
-static float g_shadow_from_view_dyn[SHADOW_CASCADES][16];	/* moved on by the camera's step */
+static float g_shadow_from_view[SHADOW_CASCADES][16];	/* this frame's view space to each map */
 static float g_view_up[3], g_camera_y, g_ground_y;
 static float g_view_step[16];	/* this frame's view space to last frame's */
 static float g_frame_seconds;
 static float g_shadow_receiver[16];	/* this frame's view space to the wide map */
+static float g_shadow_receiver_near[16];
 static BOOL g_shadow_receiver_valid;
 static float g_prev_inv_view[16];
 static BOOL g_have_prev_cam;
@@ -550,7 +549,7 @@ static void frame_boundary(const char *source)
 		time_of_day_apply(FALSE);
 	}
 
-	/* This frame's recording is what the next frame's shadows are drawn from. */
+	/* This frame's recording becomes this frame's shadow map, and the last one its fallback. */
 	{
 		unsigned char *spare = g_rec_prev;
 
@@ -638,7 +637,9 @@ typedef void (WINAPI *glDeleteVertexArrays_t)(GLsizei, const GLuint *);
 static glDeleteVertexArrays_t real_glDeleteVertexArrays;
 static glUseProgram_t real_glUseProgram;
 static glDrawRangeElements_t real_glDrawRangeElements;
-static void shadow_replay(void);
+static void shadow_replay(const unsigned char *stream, size_t used, GLuint prog, GLuint vao);
+static void shadow_frame_end(void);
+static void shadow_forward(const float *inv_view);
 
 /* --- shadows ---
 
@@ -1002,21 +1003,20 @@ static void shadow_create(void)
 	static const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 	static const unsigned char white_pixel[4] = { 255, 255, 255, 255 };
 	GLenum status;
-	int i, c;
+	int i;
 
 	weather_noise_create();
 	if (!g_cfg_shadows || !my_glProgramUniformMatrix4fv || !my_glProgramUniform1i)
 		return;
 
 	g_shadow_enabled = TRUE;
-	my_glGenFramebuffers(2 * SHADOW_CASCADES, g_shadow_fbo[0]);
-	my_glGenTextures(2 * SHADOW_CASCADES, g_shadow_tex[0]);
-	for (i = 0; i < 2 * SHADOW_CASCADES; i++) {
-		int size = i % SHADOW_CASCADES ? SHADOW_NEAR_SIZE : g_cfg_shadow_size;
+	my_glGenFramebuffers(SHADOW_CASCADES, g_shadow_fbo);
+	my_glGenTextures(SHADOW_CASCADES, g_shadow_tex);
+	for (i = 0; i < SHADOW_CASCADES; i++) {
+		int size = i ? SHADOW_NEAR_SIZE : g_cfg_shadow_size;
 
-		c = i / SHADOW_CASCADES;
-		real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + i % SHADOW_CASCADES);
-		real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[c][i % SHADOW_CASCADES]);
+		real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + i);
+		real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[i]);
 		real_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, size, size,
 				  0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
 		real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1027,9 +1027,9 @@ static void shadow_create(void)
 		real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
 		real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
 
-		real_glBindFramebuffer(GL_FRAMEBUFFER, g_shadow_fbo[c][i % SHADOW_CASCADES]);
+		real_glBindFramebuffer(GL_FRAMEBUFFER, g_shadow_fbo[i]);
 		real_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
-					    g_shadow_tex[c][i % SHADOW_CASCADES], 0);
+					    g_shadow_tex[i], 0);
 		my_glDrawBuffer(GL_NONE);
 		my_glReadBuffer(GL_NONE);
 		status = my_glCheckFramebufferStatus(GL_FRAMEBUFFER);
@@ -1186,6 +1186,7 @@ static void weather_apply(const float *inv_view)
 	}
 }
 
+/* The game's shaders can take the map too, for when there is no post pass to shade with. */
 static void shadow_set_receiver(GLuint prog, const float *far_matrix, const float *near_matrix)
 {
 	if (!prog || g_loc_shadow_matrix[prog] < 0)
@@ -1224,8 +1225,7 @@ static void frame_step_update(const float *inv_view)
 /* Called with this frame's view matrix, before the first terrain draw. */
 static void shadow_frame_start(const float *view)
 {
-	float inv_view[16], shifted[16], receiver[SHADOW_CASCADES][16];
-	float motion[3] = { 0.0f, 0.0f, 0.0f };
+	float inv_view[16];
 	int c;
 
 	/* Shadow frames carry every other effect, so without one the game draws as it would alone. */
@@ -1267,40 +1267,16 @@ static void shadow_frame_start(const float *view)
 		return;
 
 	/*
-	 The maps are drawn from last frame's recording, now that this frame's camera
-	 is known. The chase camera moves with the rider, so its real movement says
-	 where they are, including frames where physics ticked twice.
+	 With post there is a pass at the end of the frame that reads a map drawn from this
+	 frame's own draw calls (shadow_frame_end), so nothing here has to guess anything.
+	 Without one (msaa under 2 draws straight to the window) the map can only be last
+	 frame's, and it goes into the game's shaders instead: a frame behind, never sliding.
 	*/
-	if (g_shadow_ready && g_have_prev_cam && !g_replay_block) {
-		for (c = 0; c < 3; c++)
-			motion[c] = inv_view[12 + c] - g_prev_inv_view[12 + c];
-		if (v_dot(motion, motion) > SHADOW_MAX_MOTION * SHADOW_MAX_MOTION)
-			motion[0] = motion[1] = motion[2] = 0.0f;
-
-		memcpy(shifted, g_prev_inv_view, sizeof shifted);
-		for (c = 0; c < 3; c++)
-			shifted[12 + c] += motion[c];
-		for (c = 0; c < SHADOW_CASCADES; c++) {
-			mat_mul(g_shadow_from_view[c], g_light_matrix[c], g_prev_inv_view);
-			mat_mul(g_shadow_from_view_dyn[c], g_light_matrix[c], shifted);
-		}
-
-		g_shadow_write ^= 1;
-		shadow_replay();
-
-		for (c = 0; c < SHADOW_CASCADES; c++)
-			mat_mul(receiver[c], g_light_matrix[c], inv_view);
-		memcpy(g_shadow_receiver, receiver[0], sizeof g_shadow_receiver);
-		g_shadow_receiver_valid = TRUE;
-		shadow_set_receiver(g_terrain_prog, receiver[0], receiver[1]);
-		shadow_set_receiver(g_model_prog, receiver[0], receiver[1]);
-		shadow_set_receiver(g_sprite_prog, receiver[0], receiver[1]);
-		for (c = 0; c < SHADOW_CASCADES; c++) {
-			real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + c);
-			real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[g_shadow_write][c]);
-		}
-		real_glActiveTexture(g_active_unit);
-	}
+	for (c = 0; c < SHADOW_CASCADES; c++)
+		mat_mul(g_shadow_from_view[c], g_light_matrix[c], inv_view);
+	g_shadow_receiver_valid = FALSE;
+	if (!g_cfg_post || !g_fbo || !post_ready())
+		shadow_forward(inv_view);
 
 	memcpy(g_prev_inv_view, inv_view, sizeof g_prev_inv_view);
 	g_have_prev_cam = TRUE;
@@ -2064,7 +2040,7 @@ static void terrain_fill_visit(int x, int z, int n)
 	}
 }
 
-/* Goes with the recording: what this frame skipped is drawn with the next frame's shadows. */
+/* Goes with the recording: what this frame skipped is drawn with this frame's shadows. */
 static void terrain_frame_end(void)
 {
 	int x, z, n;
@@ -2602,6 +2578,8 @@ static void run_post(void)
 	g_post_done = TRUE;
 	if (!g_cfg_post || !g_fbo || !g_terrain_prog)
 		return;
+	/* The map is drawn here, at the end of the frame, from what the frame drew. */
+	shadow_frame_end();
 	s.scene_fbo = g_fbo;
 	s.w = g_fbo_w;
 	s.h = g_fbo_h;
@@ -2620,6 +2598,7 @@ static void run_post(void)
 	s.view_up = g_view_up;
 	s.fog_color = fog && fog->data ? fog->data : default_fog;
 	s.shadow_matrix = g_shadow_receiver_valid ? g_shadow_receiver : NULL;
+	s.shadow_near_matrix = g_shadow_receiver_valid ? g_shadow_receiver_near : NULL;
 	s.camera_height = g_camera_y - g_ground_y;
 	s.fog_amount = g_cfg_fog / 100.0f;
 	s.dof = g_cfg_dof / 100.0f;
@@ -4057,7 +4036,6 @@ static void replay_stream(const unsigned char *stream, size_t used, GLuint prog,
 	GLint offset_real = offset ? offset->real : -1, scale_real = scale ? scale->real : -1;
 	const float *block_offset = NULL, *model_view = NULL;
 	float block_scale = 0.0f;
-	int dynamic_now = 0;
 	size_t at = 0;
 
 	while (at < used) {
@@ -4068,14 +4046,6 @@ static void replay_stream(const unsigned char *stream, size_t used, GLuint prog,
 
 		if ((c->type == REC_DRAWELEMENTS || c->type == REC_DRAWRANGE) && state_only)
 			continue;
-
-		/* Riders move on before the map is used, scenery doesn't. */
-		if ((c->type == REC_DRAWELEMENTS || c->type == REC_DRAWRANGE) && prog == g_model_prog &&
-		    c->e != DRAW_NO_SHADOW && (c->e == DRAW_DYNAMIC) != dynamic_now) {
-			dynamic_now = c->e == DRAW_DYNAMIC;
-			my_glProgramUniformMatrix4fv(prog, g_loc_proj[prog], 1, 0, dynamic_now ?
-						     g_shadow_from_view_dyn[cascade] : g_shadow_from_view[cascade]);
-		}
 
 		/* Scenery is drawn for the view too, and little of it is near the near map. */
 		if (prog == g_model_prog) {
@@ -4151,7 +4121,7 @@ static void draw_rigid(int cascade)
 	real_glUseProgram(g_model_prog);
 	if (nb->real >= 0)
 		real_glUniform1i(nb->real, 0);
-	my_glProgramUniformMatrix4fv(g_model_prog, g_loc_proj[g_model_prog], 1, 0, g_shadow_from_view_dyn[cascade]);
+	my_glProgramUniformMatrix4fv(g_model_prog, g_loc_proj[g_model_prog], 1, 0, g_shadow_from_view[cascade]);
 	real_glActiveTexture(GL_TEXTURE0 + unit);
 	real_glBindTexture(GL_TEXTURE_2D, g_white_tex);
 
@@ -4214,30 +4184,30 @@ static void draw_terrain_fill(int cascade)
 	real_glBindTexture(GL_TEXTURE_2D, g_unit_tex[heights->value]);
 }
 
-static void replay_cascade(int cascade)
+static void replay_cascade(int cascade, const unsigned char *stream, size_t used, GLuint prog, GLuint vao)
 {
 	int size = cascade ? SHADOW_NEAR_SIZE : g_cfg_shadow_size;
 
-	real_glBindFramebuffer(GL_FRAMEBUFFER, g_shadow_fbo[g_shadow_write][cascade]);
+	real_glBindFramebuffer(GL_FRAMEBUFFER, g_shadow_fbo[cascade]);
 	real_glViewport(0, 0, size, size);
 	real_glClear(GL_DEPTH_BUFFER_BIT);
 
 	shadow_pass_uniforms(g_terrain_prog, g_shadow_from_view[cascade], 1);
 	shadow_pass_uniforms(g_model_prog, g_shadow_from_view[cascade], 1);
 
-	real_glUseProgram(g_rec_prev_prog);
-	real_glBindVertexArray(g_rec_prev_vao);
-	replay_stream(g_rec_prev, g_rec_prev_used, g_rec_prev_prog, g_rec_prev_vao, cascade);
+	real_glUseProgram(prog);
+	real_glBindVertexArray(vao);
+	replay_stream(stream, used, prog, vao, cascade);
 	draw_terrain_fill(cascade);
 	if (g_rigid_needed)
 		draw_rigid(cascade);
 }
 
 /*
- Runs partway into a frame, from last frame's recording. Afterwards this frame's
- own recording is applied again, so the game finds GL as it left it moments ago.
+ Draws the map from one recording, then puts the game's state back: the same stream's
+ state changes are replayed without its draws, so GL ends where the game left it.
 */
-static void shadow_replay(void)
+static void shadow_replay(const unsigned char *stream, size_t used, GLuint prog, GLuint vao)
 {
 	GLboolean depth = my_glIsEnabled(GL_DEPTH_TEST), cull = my_glIsEnabled(GL_CULL_FACE);
 	GLboolean clamp = my_glIsEnabled(GL_DEPTH_CLAMP);
@@ -4249,7 +4219,7 @@ static void shadow_replay(void)
 	real_glEnable(GL_DEPTH_CLAMP);
 	real_glDepthMask(1);
 	for (c = 0; c < SHADOW_CASCADES; c++)
-		replay_cascade(c);
+		replay_cascade(c, stream, used, prog, vao);
 
 	if (g_terrain_prog)
 		shadow_pass_uniforms(g_terrain_prog, g_proj_value[g_terrain_prog], 0);
@@ -4266,12 +4236,78 @@ static void shadow_replay(void)
 	real_glViewport(g_vp[0], g_vp[1], g_vp[2], g_vp[3]);
 	bind_current_fb();
 
-	real_glUseProgram(g_rec_start_prog);
-	real_glBindVertexArray(g_rec_start_vao);
-	replay_stream(g_rec, g_rec_used, g_rec_start_prog, g_rec_start_vao, REPLAY_STATE_ONLY);
+	real_glUseProgram(prog);
+	real_glBindVertexArray(vao);
+	replay_stream(stream, used, prog, vao, REPLAY_STATE_ONLY);
 	real_glUseProgram(g_cur_prog);
 	real_glBindVertexArray(g_cur_vao);
 	real_glActiveTexture(g_active_unit);
+}
+
+/*
+ No post pass to shade the finished frame, so the map goes into the game's shaders: last
+ frame's recording, drawn and sampled through one matrix, so it sits a frame behind the
+ bike instead of sliding against it.
+*/
+static void shadow_forward(const float *inv_view)
+{
+	static BOOL logged;
+	int c;
+
+	if (!g_shadow_ready || !g_have_prev_cam || g_replay_block)
+		return;
+	for (c = 0; c < SHADOW_CASCADES; c++)
+		mat_mul(g_shadow_from_view[c], g_light_matrix[c], g_prev_inv_view);
+	shadow_replay(g_rec_prev, g_rec_prev_used, g_rec_prev_prog, g_rec_prev_vao);
+	memcpy(g_shadow_receiver, g_shadow_from_view[0], sizeof g_shadow_receiver);
+	memcpy(g_shadow_receiver_near, g_shadow_from_view[1], sizeof g_shadow_receiver_near);
+	g_shadow_receiver_valid = TRUE;
+	shadow_set_receiver(g_terrain_prog, g_shadow_receiver, g_shadow_receiver_near);
+	shadow_set_receiver(g_model_prog, g_shadow_receiver, g_shadow_receiver_near);
+	shadow_set_receiver(g_sprite_prog, g_shadow_receiver, g_shadow_receiver_near);
+	for (c = 0; c < SHADOW_CASCADES; c++) {
+		real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + c);
+		real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[c]);
+	}
+	real_glActiveTexture(g_active_unit);
+	if (!logged) {
+		logged = TRUE;
+		log_msg("shadows: no post pass, so the game's shaders get last frame's map");
+	}
+}
+
+/*
+ The frame's shadow map, drawn from the frame's own recording. It runs at scene end,
+ after every caster has been drawn, so the map and the picture are the same frame:
+ there is no motion to predict and nothing left to stutter. The post pass reads it.
+*/
+static void shadow_frame_end(void)
+{
+	static BOOL logged;
+	int c;
+
+	if (!g_shadow_enabled || !g_have_light || !g_cfg_enabled || !g_shadow_frame || !post_ready())
+		return;
+	if (!g_rec_used || g_rec_overflow)
+		return;
+	for (c = 0; c < SHADOW_CASCADES; c++) {
+		float m[16];
+
+		mat_mul(m, g_light_matrix[c], g_prev_inv_view);
+		memcpy(c ? g_shadow_receiver_near : g_shadow_receiver, m, sizeof m);
+	}
+	shadow_replay(g_rec, g_rec_used, g_rec_start_prog, g_rec_start_vao);
+	g_shadow_receiver_valid = TRUE;
+	/* Where the post pass reads them from. */
+	for (c = 0; c < SHADOW_CASCADES; c++) {
+		real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + c);
+		real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[c]);
+	}
+	real_glActiveTexture(g_active_unit);
+	if (!logged) {
+		logged = TRUE;
+		log_msg("shadows: the map is drawn at the end of the frame, from this frame's own draws");
+	}
 }
 
 HOOK(void, glUseProgram, (GLuint program))
@@ -4516,40 +4552,24 @@ void hooks_init(void)
 
 #ifndef _WIN32
 /*
- --- Linux: what the wgl hooks above do, called by preload.c's GLX hooks ---
+ --- Linux: what the wgl hooks above do, called by preload.c's GLX and EGL hooks ---
 
- The Linux game makes one legacy context with glXCreateContext and never asks for a version,
- so gl_major and gl_minor have nothing to change. The main context is the first one made
- current on a window, which preload.c also uses to pick the swaps that end a frame.
+ The game opens its display one of two ways: a legacy glXCreateContext context, or, when the
+ X server has no GLX, EGL. Either way it makes one context and never asks for a version, so
+ gl_major and gl_minor have nothing to change. The main context is the first one made current
+ on a window, which preload.c also uses to pick the swaps that end a frame; on the EGL path
+ the window is the one the EGL surface was made on.
 */
-void hooks_glx_context_created(HGLRC rc)
-{
-	log_msg("glXCreateContext -> %p", rc);
-}
-
-void hooks_glx_context_destroyed(HGLRC rc)
-{
-	log_msg("glXDestroyContext %p", rc);
-	if (rc == g_main_rc) {
-		g_main_rc = NULL;
-		g_fbo = 0;
-		g_aniso = 1.0f;
-		sky_context_lost();
-		post_context_lost();
-		ui_context_lost();
-	}
-}
-
-void hooks_glx_made_current(HDC dc, HGLRC rc)
+static void context_made_current(HDC dc, HGLRC rc, const char *call)
 {
 	typedef const char *(WINAPI *glGetString_t)(GLenum);
 	glGetString_t gs = (glGetString_t)GetProcAddress(g_real_gl, "glGetString");
 
-	log_msg("glXMakeCurrent %p on window 0x%lx", rc, dc);
+	log_msg("%s %p on window 0x%lx", call, rc, dc);
 	if (!g_main_rc) {
 		g_main_rc = rc;
 		if (g_cfg_gl_major > 0)
-			log_msg("legacy GLX context: the driver picks its version, gl_major and gl_minor aren't used");
+			log_msg("legacy GL context: the driver picks its version, gl_major and gl_minor aren't used");
 	}
 	if (gs) {
 		log_msg("  GL_VENDOR   %s", gs(GL_VENDOR));
@@ -4561,21 +4581,34 @@ void hooks_glx_made_current(HDC dc, HGLRC rc)
 		context_ready(dc);
 }
 
-void hooks_glx_swap(HDC dc)
+static void context_destroyed(HGLRC rc, const char *call)
 {
-	if (!g_saw_swap)
-		log_msg("glXSwapBuffers reached the library");
-	g_saw_swap = TRUE;
-	present(dc);
-	frame_boundary("glXSwapBuffers");
+	log_msg("%s %p", call, rc);
+	if (rc == g_main_rc) {
+		g_main_rc = NULL;
+		g_fbo = 0;
+		g_aniso = 1.0f;
+		sky_context_lost();
+		post_context_lost();
+		ui_context_lost();
+	}
 }
 
-/* What to hand the game for a glXGetProcAddress name, like the wglGetProcAddress hook. */
-void *hooks_glx_proc(const char *name, void *p)
+static void frame_swapped(HDC dc, const char *call)
+{
+	if (!g_saw_swap)
+		log_msg("%s reached the library", call);
+	g_saw_swap = TRUE;
+	present(dc);
+	frame_boundary(call);
+}
+
+/* What to hand the game for a get-proc-address name, like the wglGetProcAddress hook. */
+static void *proc_wrapped(const char *name, void *p, const char *call)
 {
 	size_t i;
 
-	log_msg("glXGetProcAddress %s -> %p", name, p);
+	log_msg("%s %s -> %p", call, name, p);
 	if (!p)
 		return NULL;
 	for (i = 0; i < sizeof g_dyn / sizeof g_dyn[0]; i++) {
@@ -4585,5 +4618,55 @@ void *hooks_glx_proc(const char *name, void *p)
 		}
 	}
 	return p;
+}
+
+void hooks_glx_context_created(HGLRC rc)
+{
+	log_msg("glXCreateContext -> %p", rc);
+}
+
+void hooks_egl_context_created(HGLRC rc)
+{
+	log_msg("eglCreateContext -> %p", rc);
+}
+
+void hooks_glx_context_destroyed(HGLRC rc)
+{
+	context_destroyed(rc, "glXDestroyContext");
+}
+
+void hooks_egl_context_destroyed(HGLRC rc)
+{
+	context_destroyed(rc, "eglDestroyContext");
+}
+
+void hooks_glx_made_current(HDC dc, HGLRC rc)
+{
+	context_made_current(dc, rc, "glXMakeCurrent");
+}
+
+void hooks_egl_made_current(HDC dc, HGLRC rc)
+{
+	context_made_current(dc, rc, "eglMakeCurrent");
+}
+
+void hooks_glx_swap(HDC dc)
+{
+	frame_swapped(dc, "glXSwapBuffers");
+}
+
+void hooks_egl_swap(HDC dc)
+{
+	frame_swapped(dc, "eglSwapBuffers");
+}
+
+void *hooks_glx_proc(const char *name, void *p)
+{
+	return proc_wrapped(name, p, "glXGetProcAddress");
+}
+
+void *hooks_egl_proc(const char *name, void *p)
+{
+	return proc_wrapped(name, p, "eglGetProcAddress");
 }
 #endif

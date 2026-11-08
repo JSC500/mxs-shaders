@@ -2,7 +2,8 @@
 # Tests the Linux build without the game: the ini code, then a stand-in mxbin on Xvfb with Mesa's
 # software GL, launched through mxs-shaders.sh from a folder with a space in its name, with real X
 # input from XTest and a window manager-style frame around the game's window.
-# Needs: Xvfb, Mesa GLX, libXtst, ImageMagick's import (for a screenshot of the panel).
+# Needs: Xvfb, Mesa GLX and EGL, libXtst, ImageMagick's import (for a screenshot of the panel), and a bold
+# italic font the panel can use (fonts-dejavu-core, or any of the fonts src/ui.c looks for).
 # Optional: MXS_GAME_SHADERS=<probe's shaders folder> also compiles the game's own shaders, so the
 # default pack replaces them and Mesa has to compile and link it. They aren't in the repo.
 set -u
@@ -20,7 +21,7 @@ check() { if eval "$2"; then echo "  ok: $1"; else echo "  FAIL: $1"; fail=1; fi
 
 rm -rf "$out" && mkdir -p "$game" "$data"
 gcc -std=gnu11 -Wall -Wextra -Werror=incompatible-pointer-types -Werror=implicit-function-declaration -Isrc -o "$out/ini_test" tests/ini_test.c src/platform_linux.c -ldl || exit 1
-gcc -O1 -Wall -Werror=incompatible-pointer-types -Werror=implicit-function-declaration -o "$game/mxbin" tests/fake_mxbin.c $L/libGL.so.1 -lX11 || exit 1
+gcc -O1 -Wall -Werror=incompatible-pointer-types -Werror=implicit-function-declaration -o "$game/mxbin" tests/fake_mxbin.c $L/libGL.so.1 $L/libEGL.so.1 -lX11 || exit 1
 gcc -O1 -Wall -Werror=incompatible-pointer-types -Werror=implicit-function-declaration -o "$out/driver" tests/driver.c $L/libXtst.so.6 -lX11 || exit 1
 cp "$game/mxbin" "$out/notmx"
 cp "$lib" mxs-shaders.sh "$game/"
@@ -53,16 +54,40 @@ check "Escape closed the open panel without reaching the game, and reached it wi
 check "6 pointer events held back the first time (3 presses, 3 releases)" "grep -q '^panel closed: 6 pointer' '$log'"
 check "the game got only the 3 clicks made while the panel was closed, as events" "grep -q 'received 3 button presses, 3 releases' '$out/game.txt'"
 check "and by polling XQueryPointer" "grep -q 'saw 3 clicks by polling' '$out/game.txt'"
-check "the panel closed by itself when focus left the game" "grep -A1 '^focus elsewhere' '$log' | grep -q '^panel closed'"
+# The close is noticed in the same frame's end as the focus check, after any "frame N" line that
+# is due, so it needn't be the very next line. It must still come before focus returns.
+check "the panel closed by itself when focus left the game" \
+	"awk '/^focus elsewhere/ { away = 1 } away && /^panel closed/ { closed = 1 } away && /^focus on the game/ { away = 0 } END { exit !closed }' '$log'"
 check "glXGetProcAddress can't bypass a static hook" "grep -q 'glDrawArrays) is the hook' '$out/game.txt'"
 if [ -n "$shaders" ]; then
 	check "every game shader got a role" "! grep -q 'unknown shader role' '$log'"
 	check "the default pack replaced model, reflection, sprite and terrain" "for r in model.fsh reflection.fsh sprite.fsh terrain.fsh; do grep -q \"role \$r, using pack shader\" '$log' || exit 1; done"
 	check "and all programs linked on Mesa" "grep -q 'programs linked, 0 failed' '$out/game.txt'"
+	# Only the game's own terrain/model draws reach the shadow path, so this needs them.
+	check "the shadow map is drawn at the end of the frame, from the frame's own draws" \
+		"grep -q '^shadows: the map is drawn at the end of the frame' '$log'"
 fi
 check "no failures or GL errors logged" "! grep -qiE 'failed|^GL error|^glGetError' '$log'"
 
-echo "3. inert outside mxbin"
+echo "3. the same game opening its display through EGL"
+(cd "$game" && MXS_TEST_EGL=1 XDG_DATA_HOME="$xdg" ./mxs-shaders.sh "$out/id_egl.txt" $shaders >"$out/game_egl.txt" 2>&1) &
+gpid=$!
+"$out/driver" "$out/id_egl.txt"
+wait $gpid
+log="$data/mxs-shaders.log"
+sed 's/^/  egl: /' "$out/game_egl.txt"
+grep -vE "^glXGetProcAddress|^eglGetProcAddress|^  role " "$log" | sed 's/^/  log: /'
+check "the EGL swap hook ran" "grep -q '^eglSwapBuffers reached the library' '$log'"
+check "the context was set up through EGL (anisotropy, MSAA, shadow maps)" "grep -q '^anisotropy ' '$log'"
+check "the panel opened and closed three times on the EGL path" "[ \$(grep -c '^panel open:' '$log') = 3 ] && [ \$(grep -c '^panel closed:' '$log') = 3 ]"
+check "the game's mouse input was held back on the EGL path too" "grep -q '^panel closed: 6 pointer' '$log'"
+check "eglGetProcAddress can't bypass a static hook" "grep -q 'glDrawArrays) is the hook' '$out/game_egl.txt'"
+check "no failures or GL errors logged on the EGL path" "! grep -qiE 'failed|^GL error|^glGetError' '$log'"
+if [ -n "$shaders" ]; then
+	check "every game shader got a role on the EGL path" "! grep -q 'unknown shader role' '$log'"
+fi
+
+echo "4. inert outside mxbin"
 cp "$log" "$out/game.log"	# kept for reading after a failure
 rm -f "$log"
 LD_PRELOAD="$data/libmxs-shaders.so" bash -c 'ls / >/dev/null; true'
@@ -74,7 +99,7 @@ wait $npid
 check "a program not called mxbin runs normally and gets every click" "grep -q 'received 6 button presses' '$out/notmx.txt'"
 check "and writes no log" "[ ! -e '$log' ]"
 
-echo "4. launcher errors"
+echo "5. launcher errors"
 out4=$(cd "$game" && XDG_DATA_HOME="$out/with space" ./mxs-shaders.sh 2>&1); r=$?
 check "a data path with a space is refused with a clear message" "[ $r != 0 ] && echo \"\$out4\" | grep -q 'space or colon'"
 out5=$(cd "$out" && MX_HOME=/nonexistent "$game/mxs-shaders.sh" 2>&1); r=$?

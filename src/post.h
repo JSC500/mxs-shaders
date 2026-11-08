@@ -27,6 +27,7 @@ typedef struct {
 	const float *view_up;		/* world up in view space */
 	const float *fog_color;		/* the game's, gamma encoded */
 	const float *shadow_matrix;	/* view space to wide shadow map, NULL without one */
+	const float *shadow_near_matrix;	/* and to the sharp map around the rider */
 	float camera_height;		/* above the ground around the rider */
 	float fog_amount;		/* the fog setting, 1 is the pack's default */
 	float dof, saturation, contrast, split_tone;	/* the same for these */
