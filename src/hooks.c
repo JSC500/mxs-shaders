@@ -143,7 +143,7 @@ enum { ROLE_NONE, ROLE_TERRAIN, ROLE_MODEL };
 /* Cascade 0 covers the distance, cascade 1 is a sharper map around the rider. */
 #define SHADOW_CASCADES 2
 #define SHADOW_NEAR_SIZE 4096	/* thin parts like levers blink at coarser sizes */
-#define SHADOW_NEAR_RANGE 20.0f
+#define SHADOW_NEAR_RANGE 40.0f	/* at Low and Ultra, see shadow_near_range; centred half ahead */
 #define SHADOW_RANGE 500	/* the wide map's reach in front of the camera, see SHADOW_DEPTH_RANGE */
 #define SHADOW_MAX_MOTION 2.0f	/* per frame, more than this is a camera cut */
 #define GROUND_FOLLOW 0.002f	/* per frame, slow enough to ride out jumps */
@@ -164,8 +164,27 @@ static GLuint g_reflection_prog;
 static int g_hdr_on;
 
 static int g_cfg_shadows, g_cfg_shadow_size, g_cfg_shadow_range;
+
+/*
+ The sharp map's reach grows with Shadow Quality: one 4096 map over more ground, so shadows stay
+ sharp further out and lose detail as they do. Ultra keeps the shortest because its wide map is
+ already the finest, and a longer reach there would only coarsen what is sharp today.
+*/
+static float shadow_near_range(void)
+{
+	switch (g_cfg_shadow_size) {
+	case 2048:
+		return 55.0f;
+	case 4096:
+		return 70.0f;
+	default:
+		return SHADOW_NEAR_RANGE;
+	}
+}
 static BOOL g_shadow_enabled;
 static GLuint g_shadow_fbo[SHADOW_CASCADES], g_shadow_tex[SHADOW_CASCADES];
+static int g_shadow_size_made;	/* the wide map's size, which Shadow Quality changes live */
+static void shadow_maps_create(BOOL wide_only);	/* objects are made once, storage follows the size */
 static BOOL g_shadow_frame;	/* this frame draws the 3D scene, so its map can be drawn */
 static BOOL g_shadow_ready;	/* a finished map exists to sample */
 static unsigned char *g_rec, *g_rec_prev;
@@ -584,6 +603,9 @@ static void frame_boundary(const char *source)
 	if (g_enabled_changed)
 		enabled_apply();
 	g_enabled_changed = FALSE;
+	/* Shadow Quality is live: its map's storage follows here, where nothing is mid-draw. */
+	if (g_shadow_enabled && g_shadow_tex[0] && g_shadow_size_made != g_cfg_shadow_size)
+		shadow_maps_create(TRUE);
 	if (g_lod_bias != lod_bias_wanted())
 		texture_filter_apply();
 
@@ -998,21 +1020,20 @@ static void weather_noise_create(void)
 	real_glActiveTexture(g_active_unit);
 }
 
-static void shadow_create(void)
+/*
+ (Re)allocates the maps' storage at the sizes they have now, on objects shadow_create makes.
+ Shadow Quality is live, so this runs again at a frame boundary when it changes, and it has to:
+ the pass draws into the map at g_cfg_shadow_size (the replay's viewport), while the shaders
+ sample the whole texture, so a map left at its old size takes that draw in one corner of itself
+ and the rest of the track stays unshadowed.
+*/
+static void shadow_maps_create(BOOL wide_only)
 {
 	static const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-	static const unsigned char white_pixel[4] = { 255, 255, 255, 255 };
 	GLenum status;
-	int i;
+	int i, maps = wide_only ? 1 : SHADOW_CASCADES;
 
-	weather_noise_create();
-	if (!g_cfg_shadows || !my_glProgramUniformMatrix4fv || !my_glProgramUniform1i)
-		return;
-
-	g_shadow_enabled = TRUE;
-	my_glGenFramebuffers(SHADOW_CASCADES, g_shadow_fbo);
-	my_glGenTextures(SHADOW_CASCADES, g_shadow_tex);
-	for (i = 0; i < SHADOW_CASCADES; i++) {
+	for (i = 0; i < maps; i++) {
 		int size = i ? SHADOW_NEAR_SIZE : g_cfg_shadow_size;
 
 		real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + i);
@@ -1033,14 +1054,32 @@ static void shadow_create(void)
 		my_glDrawBuffer(GL_NONE);
 		my_glReadBuffer(GL_NONE);
 		status = my_glCheckFramebufferStatus(GL_FRAMEBUFFER);
+		real_glBindTexture(GL_TEXTURE_2D, 0);
 		if (status != GL_FRAMEBUFFER_COMPLETE) {
 			log_msg("shadow framebuffer incomplete (%x), shadows off", status);
 			g_shadow_enabled = FALSE;
-			break;
+			real_glActiveTexture(GL_TEXTURE0);
+			return;
 		}
-		real_glBindTexture(GL_TEXTURE_2D, 0);
 	}
 	real_glActiveTexture(GL_TEXTURE0);
+	g_shadow_size_made = g_cfg_shadow_size;
+	log_msg("shadow maps %d range %d, %d range %.0f", g_cfg_shadow_size, g_cfg_shadow_range,
+		SHADOW_NEAR_SIZE, shadow_near_range());
+}
+
+static void shadow_create(void)
+{
+	static const unsigned char white_pixel[4] = { 255, 255, 255, 255 };
+
+	weather_noise_create();
+	if (!g_cfg_shadows || !my_glProgramUniformMatrix4fv || !my_glProgramUniform1i)
+		return;
+
+	g_shadow_enabled = TRUE;
+	my_glGenFramebuffers(SHADOW_CASCADES, g_shadow_fbo);
+	my_glGenTextures(SHADOW_CASCADES, g_shadow_tex);
+	shadow_maps_create(FALSE);
 	my_glGenTextures(1, &g_white_tex);
 	real_glBindTexture(GL_TEXTURE_2D, g_white_tex);
 	real_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white_pixel);
@@ -1048,8 +1087,6 @@ static void shadow_create(void)
 	real_glBindTexture(GL_TEXTURE_2D, g_unit_tex[0]);
 	bind_current_fb();
 	if (g_shadow_enabled) {
-		log_msg("shadow maps %d range %d, %d range %.0f", g_cfg_shadow_size, g_cfg_shadow_range,
-			SHADOW_NEAR_SIZE, SHADOW_NEAR_RANGE);
 		if (!g_rec) {
 			g_rec = malloc(REC_ARENA);
 			g_rec_prev = malloc(REC_ARENA);
@@ -1263,7 +1300,7 @@ static void shadow_frame_start(const float *view)
 	}
 
 	if (!build_light_matrix(g_light_matrix[0], inv_view, (float)g_cfg_shadow_range, g_cfg_shadow_size) ||
-	    !build_light_matrix(g_light_matrix[1], inv_view, SHADOW_NEAR_RANGE, SHADOW_NEAR_SIZE))
+	    !build_light_matrix(g_light_matrix[1], inv_view, shadow_near_range(), SHADOW_NEAR_SIZE))
 		return;
 
 	/*
@@ -2780,7 +2817,7 @@ static const ui_item g_ui_items[] = {
 
 	TOGGLE(UI_TAB_DISPLAY, "Hide Game HUD", L"hide_hud", g_cfg_hide_hud, FALSE),
 	TOGGLE(UI_TAB_DISPLAY, "Hide Cursor in Race", L"hide_cursor", g_cfg_hide_cursor, FALSE),
-	NAMED_CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes, g_shadow_names, TRUE),
+	NAMED_CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes, g_shadow_names, FALSE),
 	NAMED_CHOICE(UI_TAB_DISPLAY, "Cloud Quality", L"cloud_quality", g_cfg_cloud_quality, g_cloud_qualities, g_cloud_quality_names, FALSE),
 	CHOICE(UI_TAB_DISPLAY, "Antialiasing", L"msaa", g_cfg_msaa, g_msaa_levels),
 	CHOICE(UI_TAB_DISPLAY, "Texture Filtering", L"anisotropy", g_cfg_aniso, g_aniso_levels),
@@ -4005,7 +4042,7 @@ static void shadow_pass_uniforms(GLuint prog, const float *projection, int pass)
 static BOOL terrain_block_on_map(int cascade, float x, float z, float scale)
 {
 	const float *m = g_light_matrix[cascade];
-	float range = cascade ? SHADOW_NEAR_RANGE : (float)g_cfg_shadow_range;
+	float range = cascade ? shadow_near_range() : (float)g_cfg_shadow_range;
 	float cx = x + scale * 0.5f, cz = z + scale * 0.5f;
 	float reach = 1.0f + (scale * 0.71f + TERRAIN_HEIGHT_MARGIN) / range;
 

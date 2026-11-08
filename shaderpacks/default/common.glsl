@@ -133,15 +133,28 @@ float shadow_lookup(sampler2DShadow map, vec3 c, float radius, float bias)
 vec3 shadow_coord(mat4 matrix, vec3 pos)
 {
 	return (matrix * vec4(pos, 1.0)).xyz * 0.5 + 0.5;
-}
-
-float sun_shadow(vec3 pos, vec3 n, float ignore_meters)
+}/*
+ The depth a sample is compared at has to clear how far its filter reaches across a surface
+ tilted from the map, and how far the surface's own position may be off. Both put samples
+ deeper than the surface they belong to, which reads as shadow.
+*/
+float shadow_depth_bias(float spread, vec3 map_z, vec3 n)
 {
 	const float depth_per_meter = 1.0 / 1600.0;	/* SHADOW_DEPTH_RANGE * 2 in the mod */
-	float bias = 0.00002 + ignore_meters * depth_per_meter;
-	vec3 near_c, far_c;
-	float edge, far_edge, far_radius, tilt, near_shadow = 1.0, far_shadow = 1.0;
-	vec3 map_x, map_z;
+	float tilt = max(abs(dot(n, map_z)), 0.25);
+
+	return spread * sqrt(1.0 - tilt * tilt) / tilt * depth_per_meter;
+}
+
+/*
+ pos_error is how far the surface's position is off, in game units, when it was rebuilt
+ from a depth buffer rather than interpolated: 0 where the shader has the real thing.
+*/
+float sun_shadow_at(vec3 pos, vec3 n, float ignore_meters, float pos_error)
+{
+	float bias = 0.00002 + ignore_meters / 1600.0;
+	float edge, far_edge, spread, far_bias, near_radius, inset, near_shadow = 1.0, far_shadow = 1.0;
+	vec3 near_c, far_c, map_x, map_z, near_x;
 
 	if (u_shadow_on == 0)
 		return 1.0;
@@ -150,30 +163,55 @@ float sun_shadow(vec3 pos, vec3 n, float ignore_meters)
 	near_c = shadow_coord(u_shadow_near_matrix, pos + n * 0.025);
 	far_c = shadow_coord(u_shadow_matrix, pos + n * 0.06);
 
-	/* Sharp map close by, fading to the wide one before its border. */
-	edge = max(abs(near_c.x - 0.5), abs(near_c.y - 0.5)) * 2.0;
-	edge = smoothstep(0.8, 0.95, edge);
+	/* The matrices' rows hold each map's scale and the sun's direction. */
+	map_x = vec3(u_shadow_matrix[0][0], u_shadow_matrix[1][0], u_shadow_matrix[2][0]);
+	map_z = normalize(vec3(u_shadow_matrix[0][2], u_shadow_matrix[1][2], u_shadow_matrix[2][2]));
+	near_x = vec3(u_shadow_near_matrix[0][0], u_shadow_near_matrix[1][0], u_shadow_near_matrix[2][0]);
 
-	if (edge < 1.0)
-		near_shadow = shadow_lookup(u_shadow_near_map, near_c, 4.0 / 4096.0, bias);
+	/*
+	 How far the wide map's filter reaches across the ground, and never less than this. What
+	 the map is compared against is off by more than its texels say: the surface comes from
+	 the depth buffer, and terrain can be filled for the map at a coarser mesh than the game
+	 drew. Left to the texels alone, Ultra's bias fell under that and the track went to shade.
+	*/
+	spread = max(2.5 / float(textureSize(u_shadow_map, 0).x) * 2.0 / length(map_x), 0.75);
+	far_bias = bias + shadow_depth_bias(spread + pos_error, map_z, n);
+
+	/*
+	 Sharp map close by, fading to the wide one in the last few game units before its border.
+	 The band is a fixed width rather than a share of the map, or a longer reach would spend
+	 most of itself fading and look no sharper than the map it hands over to. Its filter
+	 widens across the band to the wide map's spread in world units, and its bias grows to the
+	 wide map's at the same rate: two maps meeting at different softnesses, or at shadows
+	 pushed different distances from their casters, show the change as a square edge across
+	 the ground, worst when riding at speed.
+	*/
+	inset = min(min(near_c.x, 1.0 - near_c.x), min(near_c.y, 1.0 - near_c.y)) * 2.0 / length(near_x);
+	edge = 1.0 - smoothstep(0.0, 4.0, inset);
+	if (edge < 1.0) {
+		near_radius = mix(4.0 / float(textureSize(u_shadow_near_map, 0).x),
+				  2.5 / float(textureSize(u_shadow_map, 0).x) * length(near_x) / length(map_x),
+				  edge * edge);
+		near_shadow = shadow_lookup(u_shadow_near_map, near_c, near_radius, mix(bias, far_bias, edge * edge));
+	}
 	/* The wide map fades out before its border, so its end isn't a visible line. */
 	far_edge = max(abs(far_c.x - 0.5), abs(far_c.y - 0.5)) * 2.0;
-	if (edge > 0.0 && far_edge < 1.0) {
-		/*
-		 Samples spread across the map land deeper on a surface tilted from the
-		 sun, which would count as shadow. The bias has to clear that spread, in
-		 world units, for any shadow_range. The matrix's rows hold the map's scale
-		 and the sun's direction.
-		*/
-		far_radius = 2.5 / float(textureSize(u_shadow_map, 0).x);
-		map_x = vec3(u_shadow_matrix[0][0], u_shadow_matrix[1][0], u_shadow_matrix[2][0]);
-		map_z = normalize(vec3(u_shadow_matrix[0][2], u_shadow_matrix[1][2], u_shadow_matrix[2][2]));
-		tilt = max(abs(dot(n, map_z)), 0.25);
-		bias += far_radius * 2.0 / length(map_x) * sqrt(1.0 - tilt * tilt) / tilt * depth_per_meter;
-		far_shadow = mix(shadow_lookup(u_shadow_map, far_c, far_radius, bias), 1.0, smoothstep(0.85, 1.0, far_edge));
-	}
+	if (edge > 0.0 && far_edge < 1.0)
+		far_shadow = mix(shadow_lookup(u_shadow_map, far_c, 2.5 / float(textureSize(u_shadow_map, 0).x), far_bias),
+				 1.0, smoothstep(0.85, 1.0, far_edge));
 
 	return mix(near_shadow, far_shadow, edge);
+}
+
+float sun_shadow(vec3 pos, vec3 n, float ignore_meters)
+{
+	return sun_shadow_at(pos, n, ignore_meters, 0.0);
+}
+
+/* sun_shadow for a surface rebuilt from a depth buffer, which is pos_error units out. */
+float sun_shadow_depth(vec3 pos, vec3 n, float pos_error)
+{
+	return sun_shadow_at(pos, n, 0.0, pos_error);
 }
 
 /* One lookup is enough for the soft shapes of dust. */

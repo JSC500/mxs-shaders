@@ -258,14 +258,28 @@ void main()
 	 normal are rebuilt from the depth buffer, in view space: that is what the map's
 	 matrix (the same one the game's shaders used to get) takes. At night the light is
 	 the moon's, which the map is lit by too.
+
+	 Only the direct light goes: shade still has the sky's light, which at dawn is all
+	 there is. Scaling the whole colour turned every shadow into a black hole, where the
+	 game's shaders had only ever scaled their sun term. How much the surface faced the
+	 light is how much of it that was.
 	*/
 	if (depth < 1.0 && u_shadow_on != 0) {
 		vec3 vpos = ray * (u_proj_b / (depth * 2.0 - 1.0 + u_proj_a));
 		vec3 n = normalize(cross(dFdx(vpos), dFdy(vpos)));
+		float facing, lost;
 
 		if (dot(n, vpos) > 0.0)
 			n = -n;	/* the lookup pushes along it, so it has to face the camera */
-		c *= mix(1.0, sun_shadow(vpos, n, 0.0), SHADOW_STRENGTH);
+		facing = max(dot(n, normalize(u_light)), 0.0);
+		/*
+		 This surface is rebuilt from a 24-bit depth buffer, so it sits up to this many game
+		 units from the one that was drawn: one step of the buffer covers this much distance
+		 here, taken twice over. The lookup has to allow for it. Left out, ground in the far
+		 map counts as its own caster, faintly at 4096 and as full shade at 8192.
+		*/
+		lost = 2.0 * dist * dist / u_proj_b * (1.0 / 8388608.0);
+		c *= mix(1.0, sun_shadow_depth(vpos, n, lost), SHADOW_STRENGTH * facing);
 	}
 	/* The atmosphere itself is already there: sprite.fsh drew it in the game's own sky. */
 	if (depth >= 1.0) {
