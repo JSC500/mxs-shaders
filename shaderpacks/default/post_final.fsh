@@ -22,7 +22,7 @@ uniform float u_cloud_margin;	/* how much wider than the screen they were drawn 
 #include "sky.glsl"
 
 const float AO_STRENGTH = 0.85;
-const float SHADOW_STRENGTH = 1.0;
+const float SHADOW_FLOOR = 0.45;	/* what full shade keeps of a pixel's colour */
 const float CONTACT_STRENGTH = 0.6;
 const float BLOOM_STRENGTH = 0.12;
 
@@ -261,17 +261,19 @@ void main()
 
 	 Only the direct light goes: shade still has the sky's light, which at dawn is all
 	 there is. Scaling the whole colour turned every shadow into a black hole, where the
-	 game's shaders had only ever scaled their sun term. How much the surface faced the
-	 light is how much of it that was.
+	 game's shaders had only ever scaled their sun term, so shade keeps a floor of it.
+	 The floor is a constant and not the surface's own facing, which the last version
+	 scaled by: this normal is flat across each triangle, because it is rebuilt from the
+	 depth buffer, so scaling by it drew those triangles across the jersey and the ground,
+	 and a surface turned away from the sun lost its shadow instead of darkening.
 	*/
 	if (depth < 1.0 && u_shadow_on != 0) {
 		vec3 vpos = ray * (u_proj_b / (depth * 2.0 - 1.0 + u_proj_a));
 		vec3 n = normalize(cross(dFdx(vpos), dFdy(vpos)));
-		float facing, lost;
+		float lost;
 
 		if (dot(n, vpos) > 0.0)
 			n = -n;	/* the lookup pushes along it, so it has to face the camera */
-		facing = max(dot(n, normalize(u_light)), 0.0);
 		/*
 		 This surface is rebuilt from a 24-bit depth buffer, so it sits up to this many game
 		 units from the one that was drawn: one step of the buffer covers this much distance
@@ -279,7 +281,7 @@ void main()
 		 map counts as its own caster, faintly at 4096 and as full shade at 8192.
 		*/
 		lost = 2.0 * dist * dist / u_proj_b * (1.0 / 8388608.0);
-		c *= mix(1.0, sun_shadow_depth(vpos, n, lost), SHADOW_STRENGTH * facing);
+		c *= mix(SHADOW_FLOOR, 1.0, sun_shadow_depth(vpos, n, lost));
 	}
 	/* The atmosphere itself is already there: sprite.fsh drew it in the game's own sky. */
 	if (depth >= 1.0) {
