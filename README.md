@@ -76,7 +76,7 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 | `contrast` | 20 | 0 to 100 | Darker shadows and brighter highlights |
 | `split_tone` | 20 | 0 to 100 | Cool shadows and warm highlights |
 | `bloom` | 100 | 0 to 200 | Glow around bright things, 0 turns it off |
-| `shadow_size` | 8192 | 1024, 2048, 4096, 8192 | Shadow sharpness. Lower it on older GPUs, 8192 uses about 512 MB of video memory |
+| `shadow_size` | 8192 | 512, 1024, 2048, 4096, 8192 | Shadow sharpness. Lower it on older GPUs: 512 uses a few MB of video memory for the wide shadow map where 8192 uses about 512 MB |
 | `msaa` | 8 | 0, 2, 4, 8 | Edge smoothing, 0 turns it off |
 | `anisotropy` | 16 | 1, 2, 4, 8, 16 | Texture sharpness at an angle, 1 turns it off |
 | `borderless` | 1 | 0 or 1 | See below |

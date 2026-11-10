@@ -153,7 +153,7 @@ float shadow_depth_bias(float spread, vec3 map_z, vec3 n)
 float sun_shadow_at(vec3 pos, vec3 n, float ignore_meters, float pos_error)
 {
 	float bias = 0.00002 + ignore_meters / 1600.0;
-	float edge, far_edge, spread, far_bias, near_radius, inset, near_shadow = 1.0, far_shadow = 1.0;
+	float edge, far_edge, spread, far_bias, near_radius, near_spread, inset, near_shadow = 1.0, far_shadow = 1.0;
 	vec3 near_c, far_c, map_x, map_z, near_x;
 
 	if (u_shadow_on == 0)
@@ -192,7 +192,15 @@ float sun_shadow_at(vec3 pos, vec3 n, float ignore_meters, float pos_error)
 		near_radius = mix(4.0 / float(textureSize(u_shadow_near_map, 0).x),
 				  2.5 / float(textureSize(u_shadow_map, 0).x) * length(near_x) / length(map_x),
 				  edge * edge);
-		near_shadow = shadow_lookup(u_shadow_near_map, near_c, near_radius, mix(bias, far_bias, edge * edge));
+		/*
+		 Its own texels are what it is compared against as well, and a longer reach makes them
+		 larger: without the tilt term the rider's surface counted as its own caster, and the
+		 jersey wore the map's grid as flat squares.
+		*/
+		near_spread = near_radius * 2.0 / length(near_x);
+		near_shadow = shadow_lookup(u_shadow_near_map, near_c, near_radius,
+					    mix(bias, far_bias, edge * edge) +
+					    shadow_depth_bias(near_spread + pos_error, map_z, n));
 	}
 	/* The wide map fades out before its border, so its end isn't a visible line. */
 	far_edge = max(abs(far_c.x - 0.5), abs(far_c.y - 0.5)) * 2.0;

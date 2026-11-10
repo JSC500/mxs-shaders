@@ -2755,8 +2755,8 @@ static void present(HDC dc)
 
 /* --- the settings panel --- */
 
-static const int g_shadow_sizes[] = { 1024, 2048, 4096, 8192 };
-static const char *const g_shadow_names[] = { "Low", "Medium", "High", "Ultra" };
+static const int g_shadow_sizes[] = { 512, 1024, 2048, 4096, 8192 };
+static const char *const g_shadow_names[] = { "Ultra Low", "Low", "Medium", "High", "Ultra" };
 static const int g_msaa_levels[] = { 0, 2, 4, 8 };
 static const int g_aniso_levels[] = { 1, 2, 4, 8, 16 };
 /* Cloudy became Cloud Cover, its number stays unused so old ini files read the same. */
