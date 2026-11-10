@@ -78,6 +78,7 @@ These uniforms only need declaring to use them.
 | `u_sun_view`, `u_screen` | sprite | Sun direction and screen size |
 | `u_fog_amount`, `u_up`, `u_sun`, `u_camera_height` | `post_final.fsh` | The `fog` setting, world up, sun direction, camera height above the ground |
 | `u_bloom_amount` | `post_final.fsh` | The `bloom` setting, 1 at 100. At 0 the bloom passes don't run, so `u_bloom` isn't updated |
+| `u_shadow_strength` | `post_final.fsh` | The `shadow_strength` setting, 1 at 100: how much of a pixel's colour a sun shadow takes away |
 | `u_motion`, `u_blur_near`, `u_reproject` | `post_lens.fsh` | Blur per frame of movement, sharp distance, this frame's view space to last frame's screen |
 | `u_dof`, `u_saturation`, `u_contrast`, `u_split_tone` | `post_lens.fsh` | The settings, 1 at 100 |
 

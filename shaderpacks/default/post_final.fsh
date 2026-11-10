@@ -10,6 +10,7 @@ uniform float u_proj_a, u_proj_b, u_fx, u_fy;
 uniform float u_camera_height;	/* above the ground around the rider */
 uniform float u_fog_amount;	/* the fog setting in mxs-shaders.ini, 1 at 100 */
 uniform float u_sharpen, u_bloom_amount;	/* the settings, 1 at 100 */
+uniform float u_shadow_strength;	/* how dark a sun shadow goes, 1 at 100 */
 uniform vec3 u_up, u_sun, u_fog_color;	/* u_sun is where the sun really is, in view space */
 uniform vec3 u_light;		/* the light the scene is shaded with, the moon at night, in view space */
 uniform int u_sky_mask_on;	/* 0 until the skybox has been read */
@@ -22,7 +23,6 @@ uniform float u_cloud_margin;	/* how much wider than the screen they were drawn 
 #include "sky.glsl"
 
 const float AO_STRENGTH = 0.85;
-const float SHADOW_FLOOR = 0.45;	/* what full shade keeps of a pixel's colour */
 const float CONTACT_STRENGTH = 0.6;
 const float BLOOM_STRENGTH = 0.12;
 
@@ -262,10 +262,11 @@ void main()
 	 Only the direct light goes: shade still has the sky's light, which at dawn is all
 	 there is. Scaling the whole colour turned every shadow into a black hole, where the
 	 game's shaders had only ever scaled their sun term, so shade keeps a floor of it.
-	 The floor is a constant and not the surface's own facing, which the last version
-	 scaled by: this normal is flat across each triangle, because it is rebuilt from the
-	 depth buffer, so scaling by it drew those triangles across the jersey and the ground,
-	 and a surface turned away from the sun lost its shadow instead of darkening.
+	 How dark a shadow goes is the shadow_strength setting, and not the surface's own facing,
+	 which an earlier version scaled by: this normal is flat across each triangle, because it
+	 is rebuilt from the depth buffer, so scaling by it drew those triangles across the jersey
+	 and the ground, and a surface turned away from the sun lost its shadow instead of
+	 darkening.
 	*/
 	if (depth < 1.0 && u_shadow_on != 0) {
 		vec3 vpos = ray * (u_proj_b / (depth * 2.0 - 1.0 + u_proj_a));
@@ -281,7 +282,7 @@ void main()
 		 map counts as its own caster, faintly at 4096 and as full shade at 8192.
 		*/
 		lost = 2.0 * dist * dist / u_proj_b * (1.0 / 8388608.0);
-		c *= mix(SHADOW_FLOOR, 1.0, sun_shadow_depth(vpos, n, lost));
+		c *= mix(1.0 - u_shadow_strength, 1.0, sun_shadow_depth(vpos, n, lost));
 	}
 	/* The atmosphere itself is already there: sprite.fsh drew it in the game's own sky. */
 	if (depth >= 1.0) {

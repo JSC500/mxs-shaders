@@ -264,7 +264,7 @@ static BOOL g_cursor_hidden;
 static BOOL g_reload_requested, g_enabled_changed;	/* from the panel, done at the frame boundary */
 static int g_cfg_fog, g_cfg_parallax, g_cfg_motion_blur, g_cfg_dof, g_cfg_saturation, g_cfg_contrast, g_cfg_split_tone;
 static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_clock, g_cfg_ui_key, g_cfg_enabled;
-static int g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_bloom, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_turn;
+static int g_cfg_shadow_strength, g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_bloom, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_turn;
 static int g_cfg_weather, g_cfg_weather_amount, g_cfg_wet, g_cfg_cloud_cover, g_cfg_cloud_quality;
 static GLint g_loc_cloud_cover[MAX_IDS];
 static float g_weather_time;	/* seconds since the first frame, for drifting clouds and falling rain */
@@ -2643,6 +2643,7 @@ static void run_post(void)
 	s.contrast = g_cfg_contrast / 100.0f;
 	s.split_tone = g_cfg_split_tone / 100.0f;
 	s.sharpen = g_cfg_sharpen / 100.0f;
+	s.shadow_strength = g_cfg_shadow_strength / 100.0f;
 	s.bloom = g_cfg_bloom / 100.0f;
 	s.lens_flare = g_cfg_lens_flare / 100.0f;
 	s.goggles = g_cfg_goggles && g_frame_trimmed;
@@ -2801,6 +2802,8 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_LOOK, "Saturation", L"saturation", g_cfg_saturation, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Contrast", L"contrast", g_cfg_contrast, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Split Toning", L"split_tone", g_cfg_split_tone, 0, 100, 5),
+	/* How dark a sun shadow goes: the share of the pixel full shade takes away, 0 is no shadow. */
+	SLIDER(UI_TAB_LOOK, "Shadow Strength", L"shadow_strength", g_cfg_shadow_strength, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Sharpen", L"sharpen", g_cfg_sharpen, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Texture Sharpness", L"texture_sharpness", g_cfg_texture_sharpness, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Bloom", L"bloom", g_cfg_bloom, 0, 200, 5),
@@ -3820,6 +3823,7 @@ static void load_live_settings(void)
 	g_cfg_saturation = pack_int(L"saturation", 110);
 	g_cfg_contrast = pack_int(L"contrast", 20);
 	g_cfg_split_tone = pack_int(L"split_tone", 20);
+	g_cfg_shadow_strength = min(max(pack_int(L"shadow_strength", 55), 0), 100);
 	g_cfg_sharpen = pack_int(L"sharpen", 30);
 	g_cfg_texture_sharpness = pack_int(L"texture_sharpness", 0);
 	g_cfg_bloom = pack_int(L"bloom", 100);

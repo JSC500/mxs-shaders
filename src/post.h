@@ -31,6 +31,7 @@ typedef struct {
 	float camera_height;		/* above the ground around the rider */
 	float fog_amount;		/* the fog setting, 1 is the pack's default */
 	float dof, saturation, contrast, split_tone;	/* the same for these */
+	float shadow_strength;		/* what full shade takes away, 1 at 100 */
 	float sharpen, bloom, lens_flare;
 	int goggles;			/* the setting is on and the camera is first person */
 	float sun_moved;		/* 1 when the player moved the sun */

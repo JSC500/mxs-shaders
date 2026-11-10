@@ -184,7 +184,7 @@ static GLint g_exposure_a, g_exposure_b, g_exposure_fx, g_exposure_fy, g_exposur
 static GLuint g_prog_shafts;
 static GLint g_shafts_a, g_shafts_b, g_shafts_fx, g_shafts_fy, g_shafts_matrix, g_shafts_on;
 static GLint g_final_a, g_final_b, g_final_fx, g_final_fy, g_final_height, g_final_up, g_final_sun, g_final_fog, g_final_amount, g_final_night;
-static GLint g_final_sharpen, g_final_bloom, g_final_shadow, g_final_shadow_near, g_final_shadow_on, g_final_sky_mask_on, g_final_sky_mask_view;
+static GLint g_final_sharpen, g_final_bloom, g_final_shadow_strength, g_final_shadow, g_final_shadow_near, g_final_shadow_on, g_final_sky_mask_on, g_final_sky_mask_view;
 static GLuint g_prog_sky, g_tex_sky, g_fbo_sky;	/* the clear sky in every direction */
 static BOOL g_sky_drawn;	/* g_tex_sky holds a sky, not nothing */
 
@@ -544,6 +544,7 @@ static BOOL load_programs(void)
 	g_final_night = gl_GetUniformLocation(g_prog_final, "u_night");
 	g_final_sharpen = gl_GetUniformLocation(g_prog_final, "u_sharpen");
 	g_final_bloom = gl_GetUniformLocation(g_prog_final, "u_bloom_amount");
+	g_final_shadow_strength = gl_GetUniformLocation(g_prog_final, "u_shadow_strength");
 	g_final_sky_mask_on = gl_GetUniformLocation(g_prog_final, "u_sky_mask_on");
 	g_final_sky_mask_view = gl_GetUniformLocation(g_prog_final, "u_sky_mask_view");
 	g_final_sky_sun = gl_GetUniformLocation(g_prog_final, "u_sky_sun");
@@ -971,6 +972,7 @@ void post_run(const post_state *s)
 	gl_Uniform3f(g_final_fog, s->fog_color[0], s->fog_color[1], s->fog_color[2]);
 	gl_Uniform1f(g_final_sharpen, s->sharpen);
 	gl_Uniform1f(g_final_bloom, s->bloom);
+	gl_Uniform1f(g_final_shadow_strength, s->shadow_strength);
 	gl_Uniform1i(g_final_shadow_on, s->shadow_matrix != NULL ? 1 : 0);
 	if (s->shadow_matrix) {
 		gl_UniformMatrix4fv(g_final_shadow, 1, 0, s->shadow_matrix);

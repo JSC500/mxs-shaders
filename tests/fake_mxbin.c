@@ -174,7 +174,7 @@ int main(int argc, char **argv)
 	XVisualInfo *vi;
 	XSetWindowAttributes a;
 	Window top, child;
-	GLXContext ctx;
+	GLXContext ctx = NULL;	/* only made without MXS_TEST_EGL, and only destroyed in that case */
 	EGLDisplay edpy = NULL;
 	EGLSurface esurf = NULL;
 	EGLContext ectx = NULL;
