@@ -7,7 +7,7 @@ const float PI = 3.14159265;
 
 /* Linear space shrinks the game's ambient far more than its sun, so restore the balance. */
 const float AMBIENT_BOOST = 3.2;
-const float SUN_BOOST = 1.3;		/* at Sun Strength 100, below the 1.7 this pack had */
+const float SUN_BOOST = 1.3;		/* at Sun Strength 200, below the 1.7 this pack had */
 const float SUN_BOOST_OLD = 1.7;	/* what that was, so the sheen keeps its share of the sun */
 const float SKY_HIGH_TRIM = 0.45;	/* of the sky's fill left under an overhead sun */
 const float SATURATION = 0.88;
@@ -15,9 +15,9 @@ const float SATURATION = 0.88;
 uniform float u_night;	/* 0 by day, 1 once twilight has gone */
 
 /*
- The Sun Strength setting, 0 to 2, 1 at 100: the direct sun and the sheen that comes off
- the ground and the rider. 100 is the tuned sun, dimmer than the pack's old look, which
- sits above it on the slider.
+ The Sun Strength setting, 0 to 2, 1 at 200: the direct sun and the sheen that comes off
+ the ground and the rider. The scale is doubled, so 200 is the tuned sun, dimmer than the
+ pack's old look, which sits above it on the slider, and the default 100 is half of it.
 */
 uniform float u_sun_strength;
 

@@ -48,7 +48,10 @@ check "the mod attached and read its settings" "grep -q '^MXS Shaders (Linux) at
 check "the swap hook ran" "grep -q '^glXSwapBuffers reached the library' '$log'"
 check "the context was set up (anisotropy, MSAA, shadow maps)" "grep -q '^anisotropy ' '$log'"
 check "settings the user didn't set were added to the ini, and theirs kept" "grep -q '^shadow_size=1024' '$data/mxs-shaders.ini' && grep -q '^pack=default' '$data/mxs-shaders.ini' && grep -q '^ui_key=119' '$data/mxs-shaders.ini'"
-check "Sun Strength defaults to 100" "grep -q '^sun_strength=100' '$data/mxs-shaders.ini'"
+check "Sun Strength defaults to 100, half the tuned sun" "grep -q '^sun_strength=100' '$data/mxs-shaders.ini'"
+# The scale is doubled, so the number 100 that used to be the tuned sun is now half of it and 200 is
+# what 100 gave: the default looks the way 50 did before.
+check "Sun Strength is sent at half scale, 200 the tuned sun" "grep -q 'g_cfg_sun_strength / 200.0f' src/hooks.c && grep -q 'g_cfg_sun_strength, 0, 400, 10' src/hooks.c"
 # The track bakes its own shadow into the terrain normal map's green channel and the game multiplies
 # sunlight by it. Unscaled it outlived Shadow Strength at 0: a second, fixed shadow whose hard edges
 # cut across the ground and stayed there while the mod's own went away.

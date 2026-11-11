@@ -1165,7 +1165,7 @@ static void time_of_day_apply(BOOL race)
 		if (g_loc_ambient_loss[prog[i]] >= 0)
 			my_glProgramUniform3fv(prog[i], g_loc_ambient_loss[prog[i]], 1, race ? g_ambient_loss : none);
 		if (g_loc_sun_strength[prog[i]] >= 0)
-			my_glProgramUniform1f(prog[i], g_loc_sun_strength[prog[i]], race ? g_cfg_sun_strength / 100.0f : 1.0f);
+			my_glProgramUniform1f(prog[i], g_loc_sun_strength[prog[i]], race ? g_cfg_sun_strength / 200.0f : 1.0f);
 		/* The sky's fill gives way only in a race: the menus keep it as it is. */
 		if (g_loc_sun_height[prog[i]] >= 0)
 			my_glProgramUniform1f(prog[i], g_loc_sun_height[prog[i]], race ? g_sun_world[1] : 0.0f);
@@ -2843,7 +2843,7 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_WEATHER, "Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
 	SLIDER(UI_TAB_WEATHER, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
 	/* The sun's strength, 100 the pack's tuned sun: the old, brighter look is about 130. */
-	SLIDER(UI_TAB_WEATHER, "Sun Strength", L"sun_strength", g_cfg_sun_strength, 0, 200, 5),
+	SLIDER(UI_TAB_WEATHER, "Sun Strength", L"sun_strength", g_cfg_sun_strength, 0, 400, 10),
 
 	TOGGLE(UI_TAB_DISPLAY, "Hide Game HUD", L"hide_hud", g_cfg_hide_hud, FALSE),
 	TOGGLE(UI_TAB_DISPLAY, "Hide Cursor in Race", L"hide_cursor", g_cfg_hide_cursor, FALSE),
@@ -3868,7 +3868,8 @@ static void load_live_settings(void)
 	g_cfg_bloom = pack_int(L"bloom", 100);
 	g_cfg_lens_flare = pack_int(L"lens_flare", 50);
 	g_cfg_sun_turn = pack_int(L"sun_turn", 0);
-	g_cfg_sun_strength = min(max(pack_int(L"sun_strength", 100), 0), 200);
+	/* The scale is doubled: 200 is the tuned sun, so 100, the default, is half of it. */
+	g_cfg_sun_strength = min(max(pack_int(L"sun_strength", 100), 0), 400);
 	g_cfg_goggles = ini_int(L"goggles", 0);
 	g_cfg_weather = min(max(ini_int(L"weather", WEATHER_CLEAR), WEATHER_CLEAR), WEATHER_SNOW);
 	g_cfg_weather_amount = pack_int(L"weather_amount", 60);
