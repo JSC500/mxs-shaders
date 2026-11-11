@@ -268,7 +268,7 @@ static int g_cfg_shadow_strength, g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_
 static int g_cfg_sun_strength;
 static int g_cfg_weather, g_cfg_weather_amount, g_cfg_wet, g_cfg_cloud_cover, g_cfg_cloud_quality;
 static GLint g_loc_cloud_cover[MAX_IDS];
-static GLint g_loc_sun_strength[MAX_IDS], g_loc_sun_height[MAX_IDS];
+static GLint g_loc_sun_strength[MAX_IDS], g_loc_sun_height[MAX_IDS], g_loc_baked_shadow[MAX_IDS];
 static float g_weather_time;	/* seconds since the first frame, for drifting clouds and falling rain */
 
 typedef void (WINAPI *glGenObjects_t)(GLsizei, GLuint *);
@@ -1169,6 +1169,16 @@ static void time_of_day_apply(BOOL race)
 		/* The sky's fill gives way only in a race: the menus keep it as it is. */
 		if (g_loc_sun_height[prog[i]] >= 0)
 			my_glProgramUniform1f(prog[i], g_loc_sun_height[prog[i]], race ? g_sun_world[1] : 0.0f);
+		/*
+		 The track bakes its own shadow into the terrain normal maps, and terrain.fsh multiplies
+		 sunlight by it. It is the same sun shaded a second time, fixed to the track's own light,
+		 and Shadow Strength never touched it: at 0 its hard edges still cut across the ground
+		 while the mod's shadow faded out. The mod's map replaces it while shadows are on, so the
+		 two are never drawn over each other, and Shadow Strength scales the only one left. With
+		 the mod's shadows off the track keeps its baked shade, which is its own look.
+		*/
+		if (g_loc_baked_shadow[prog[i]] >= 0)
+			my_glProgramUniform1f(prog[i], g_loc_baked_shadow[prog[i]], race && g_cfg_shadows ? 0.0f : 1.0f);
 	}
 }
 
@@ -3619,12 +3629,16 @@ static void program_refresh(GLuint program)
 		g_loc_cloud_cover[program] = real_glGetUniformLocation(program, "u_cloud_cover");
 		g_loc_sun_strength[program] = real_glGetUniformLocation(program, "u_sun_strength");
 		g_loc_sun_height[program] = real_glGetUniformLocation(program, "u_sun_height");
+		g_loc_baked_shadow[program] = real_glGetUniformLocation(program, "u_baked_shadow");
 		/*
 		 The sun's setting until the first race frame sends it: an unset float is 0, and the
 		 menus draw before any race frame, where a pack's sun must not start black.
 		*/
 		if (g_loc_sun_strength[program] >= 0 && my_glProgramUniform1f)
 			my_glProgramUniform1f(program, g_loc_sun_strength[program], 1.0f);
+		/* Same reason: the menus must keep the track's baked shadow, not start without it. */
+		if (g_loc_baked_shadow[program] >= 0 && my_glProgramUniform1f)
+			my_glProgramUniform1f(program, g_loc_baked_shadow[program], 1.0f);
 		g_loc_wet[program] = real_glGetUniformLocation(program, "u_wet");
 		g_loc_weather_noise[program] = real_glGetUniformLocation(program, "u_weather_noise");
 

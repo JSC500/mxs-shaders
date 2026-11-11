@@ -16,6 +16,7 @@ uniform vec3 u_diffuse;
 uniform vec3 u_specular_color;
 uniform float u_texscale;	/* set by the game for the vertex shader: texture per world unit */
 uniform int u_parallax;		/* the parallax setting in mxs-shaders.ini, as a percentage */
+uniform float u_baked_shadow;	/* how much of the track's baked shadow to keep, 1 keeps it all */
 
 out vec4 f_fragcolor;
 
@@ -124,7 +125,14 @@ void main()
 
 	/* Green holds a terrain shading term, the normal's y is rebuilt from x and z. */
 	nmap = textureGrad(u_nmap, uv, dFdx(interp_texcoord), dFdy(interp_texcoord));
-	len = nmap.y;
+	/*
+	 Green holds the shadow the track baked into its normal maps, and the game multiplies
+	 sunlight by it. It is a second shadow of the same sun, fixed to the track's own light,
+	 and unscaled it outlived Shadow Strength at 0: its hard edges cut across the ground and
+	 stayed while the mod's shadow faded out. The mod's own map replaces it while shadows are
+	 on; with them off the track keeps its baked shade.
+	*/
+	len = mix(1.0, nmap.y, u_baked_shadow);
 	n = nmap.rgb * 2.0 - 1.0;
 	n.y = sqrt(max(1.0 - n.z * n.z - n.x * n.x, 0.0));
 	n = normalize(interp_modelview * tilt_to_ground(n));
