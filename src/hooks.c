@@ -143,7 +143,7 @@ enum { ROLE_NONE, ROLE_TERRAIN, ROLE_MODEL };
 /* Cascade 0 covers the distance, cascade 1 is a sharper map around the rider. */
 #define SHADOW_CASCADES 2
 #define SHADOW_NEAR_SIZE 4096	/* thin parts like levers blink at coarser sizes */
-#define SHADOW_NEAR_RANGE 40.0f	/* at Low and Ultra, see shadow_near_range; centred half ahead */
+#define SHADOW_NEAR_RANGE 80.0f	/* at Low and Ultra, see shadow_near_range; centred half ahead */
 #define SHADOW_RANGE 500	/* the wide map's reach in front of the camera, see SHADOW_DEPTH_RANGE */
 #define SHADOW_MAX_MOTION 2.0f	/* per frame, more than this is a camera cut */
 #define GROUND_FOLLOW 0.002f	/* per frame, slow enough to ride out jumps */
@@ -174,9 +174,9 @@ static float shadow_near_range(void)
 {
 	switch (g_cfg_shadow_size) {
 	case 2048:
-		return 55.0f;
+		return 110.0f;
 	case 4096:
-		return 70.0f;
+		return 140.0f;
 	default:
 		return SHADOW_NEAR_RANGE;
 	}
