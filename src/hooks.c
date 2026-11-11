@@ -142,7 +142,7 @@ enum { ROLE_NONE, ROLE_TERRAIN, ROLE_MODEL };
 
 /* Cascade 0 covers the distance, cascade 1 is a sharper map around the rider. */
 #define SHADOW_CASCADES 2
-#define SHADOW_NEAR_SIZE 4096	/* thin parts like levers blink at coarser sizes */
+#define SHADOW_NEAR_TEXEL 0.0390625f	/* game units a sharp texel covers, 2 * 80 / 4096; coarser makes levers blink */
 #define SHADOW_NEAR_RANGE 80.0f	/* at Low and Ultra, see shadow_near_range; centred half ahead */
 #define SHADOW_RANGE 500	/* the wide map's reach in front of the camera, see SHADOW_DEPTH_RANGE */
 #define SHADOW_MAX_MOTION 2.0f	/* per frame, more than this is a camera cut */
@@ -166,9 +166,9 @@ static int g_hdr_on;
 static int g_cfg_shadows, g_cfg_shadow_size, g_cfg_shadow_range;
 
 /*
- The sharp map's reach grows with Shadow Quality: one 4096 map over more ground, so shadows stay
- sharp further out and lose detail as they do. Ultra keeps the shortest because its wide map is
- already the finest, and a longer reach there would only coarsen what is sharp today.
+ The sharp map's reach grows with Shadow Quality, and its size follows at one texel size, so the
+ reach grows without softening what is already sharp. Ultra keeps the shortest because its wide map
+ is already the finest, and a longer reach there would only probe further than it can show.
 */
 static float shadow_near_range(void)
 {
@@ -181,9 +181,16 @@ static float shadow_near_range(void)
 		return SHADOW_NEAR_RANGE;
 	}
 }
+
+/* The sharp map's size, so its texel stays SHADOW_NEAR_TEXEL however far its reach goes. */
+static int shadow_near_size(void)
+{
+	return (int)(2.0f * shadow_near_range() / SHADOW_NEAR_TEXEL + 0.5f);
+}
 static BOOL g_shadow_enabled;
 static GLuint g_shadow_fbo[SHADOW_CASCADES], g_shadow_tex[SHADOW_CASCADES];
 static int g_shadow_size_made;	/* the wide map's size, which Shadow Quality changes live */
+static int g_shadow_near_made;	/* and the sharp map's, which follows its reach */
 static void shadow_maps_create(BOOL wide_only);	/* objects are made once, storage follows the size */
 static BOOL g_shadow_frame;	/* this frame draws the 3D scene, so its map can be drawn */
 static BOOL g_shadow_ready;	/* a finished map exists to sample */
@@ -606,8 +613,10 @@ static void frame_boundary(const char *source)
 		enabled_apply();
 	g_enabled_changed = FALSE;
 	/* Shadow Quality is live: its map's storage follows here, where nothing is mid-draw. */
-	if (g_shadow_enabled && g_shadow_tex[0] && g_shadow_size_made != g_cfg_shadow_size)
-		shadow_maps_create(TRUE);
+	/* The sharp map's size follows its reach, so a tier change can resize either map. */
+	if (g_shadow_enabled && g_shadow_tex[0] &&
+	    (g_shadow_size_made != g_cfg_shadow_size || g_shadow_near_made != shadow_near_size()))
+		shadow_maps_create(g_shadow_near_made == shadow_near_size());
 	if (g_lod_bias != lod_bias_wanted())
 		texture_filter_apply();
 
@@ -1036,7 +1045,7 @@ static void shadow_maps_create(BOOL wide_only)
 	int i, maps = wide_only ? 1 : SHADOW_CASCADES;
 
 	for (i = 0; i < maps; i++) {
-		int size = i ? SHADOW_NEAR_SIZE : g_cfg_shadow_size;
+		int size = i ? shadow_near_size() : g_cfg_shadow_size;
 
 		real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + i);
 		real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[i]);
@@ -1066,8 +1075,9 @@ static void shadow_maps_create(BOOL wide_only)
 	}
 	real_glActiveTexture(GL_TEXTURE0);
 	g_shadow_size_made = g_cfg_shadow_size;
+	g_shadow_near_made = shadow_near_size();
 	log_msg("shadow maps %d range %d, %d range %.0f", g_cfg_shadow_size, g_cfg_shadow_range,
-		SHADOW_NEAR_SIZE, shadow_near_range());
+		shadow_near_size(), shadow_near_range());
 }
 
 static void shadow_create(void)
@@ -1325,7 +1335,7 @@ static void shadow_frame_start(const float *view)
 	}
 
 	if (!build_light_matrix(g_light_matrix[0], inv_view, (float)g_cfg_shadow_range, g_cfg_shadow_size) ||
-	    !build_light_matrix(g_light_matrix[1], inv_view, shadow_near_range(), SHADOW_NEAR_SIZE))
+	    !build_light_matrix(g_light_matrix[1], inv_view, shadow_near_range(), shadow_near_size()))
 		return;
 
 	/*
@@ -4268,7 +4278,7 @@ static void draw_terrain_fill(int cascade)
 
 static void replay_cascade(int cascade, const unsigned char *stream, size_t used, GLuint prog, GLuint vao)
 {
-	int size = cascade ? SHADOW_NEAR_SIZE : g_cfg_shadow_size;
+	int size = cascade ? shadow_near_size() : g_cfg_shadow_size;
 
 	real_glBindFramebuffer(GL_FRAMEBUFFER, g_shadow_fbo[cascade]);
 	real_glViewport(0, 0, size, size);

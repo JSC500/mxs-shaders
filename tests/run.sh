@@ -79,6 +79,13 @@ if [ -n "$shaders" ]; then
 	# Only the game's own terrain/model draws reach the shadow path, so this needs them.
 	check "the shadow map is drawn at the end of the frame, from the frame's own draws" \
 		"grep -q '^shadows: the map is drawn at the end of the frame' '$log'"
+	# Shadow Quality moves the sharp map's reach and its size follows at one texel size, so turning
+	# the setting up sharpens nothing. The wide map is the one the setting sizes, and it keeps its
+	# 500-unit reach and 800 depth at every tier, which is what a low tier used to lose.
+	check "the sharp map is sized from its reach at one texel size" \
+		"grep -qF 'SHADOW_NEAR_TEXEL 0.0390625f' src/hooks.c && grep -qF '2.0f * shadow_near_range() / SHADOW_NEAR_TEXEL' src/hooks.c"
+	check "the wide map still reaches 500 over a depth of 800 at every tier" \
+		"grep -q 'SHADOW_RANGE 500' src/hooks.c && grep -q 'SHADOW_DEPTH_RANGE 800.0f' src/hooks.c"
 fi
 check "no failures or GL errors logged" "! grep -qiE 'failed|^GL error|^glGetError' '$log'"
 
