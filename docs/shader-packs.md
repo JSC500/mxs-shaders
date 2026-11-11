@@ -72,6 +72,7 @@ These uniforms only need declaring to use them.
 | `u_cloud_cover` | world shaders, post passes | The Cloud Cover setting, 1 at 100. `common.glsl`'s `cloud_cover()` raises it to an overcast in rain and snow, and `cloud_density()` is the cloud field the cloud shadows and the volumetric clouds share |
 | `u_clouds`, `u_cloud_view`, `u_cloud_scale` | sprite | The last volumetric clouds, the view they were drawn from, and its scale, with z 0 when there are none. `sky.glsl`'s `clouds_at()` reads them by direction |
 | `u_sky_face_on`, `u_sky_face` | sprite | Set for each skybox face once the skybox has been read: the face's corners and texture span, so `sprite.fsh` can draw the atmosphere above the skyline |
+| `u_sun_strength`, `u_sun_height` | world shaders | The Sun Strength setting, 1 at 100, and the sun's world height, 0 at the horizon and negative at night. `common.glsl`'s `sun_boost()`, `sun_power()` and `sky_light()` apply them: 100 is the pack's tuned sun, and the sky's fill is trimmed as the sun climbs |
 | `u_parallax` | terrain | The `parallax` setting |
 | `u_view_up` | model | World up in view space |
 | `u_sprite_mode` | sprite | 0 normal, 1 sky, 2 particle |

@@ -48,6 +48,7 @@ check "the mod attached and read its settings" "grep -q '^MXS Shaders (Linux) at
 check "the swap hook ran" "grep -q '^glXSwapBuffers reached the library' '$log'"
 check "the context was set up (anisotropy, MSAA, shadow maps)" "grep -q '^anisotropy ' '$log'"
 check "settings the user didn't set were added to the ini, and theirs kept" "grep -q '^shadow_size=1024' '$data/mxs-shaders.ini' && grep -q '^pack=default' '$data/mxs-shaders.ini' && grep -q '^ui_key=119' '$data/mxs-shaders.ini'"
+check "Sun Strength defaults to 100" "grep -q '^sun_strength=100' '$data/mxs-shaders.ini'"
 check "the panel font loaded" "grep -q '^ui: font /' '$log'"
 check "the panel opened and closed three times" "[ \$(grep -c '^panel open:' '$log') = 3 ] && [ \$(grep -c '^panel closed:' '$log') = 3 ]"
 check "Escape closed the open panel without reaching the game, and reached it with the panel closed" "grep -q 'received 1 escape presses' '$out/game.txt'"

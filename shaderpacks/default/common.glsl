@@ -7,10 +7,22 @@ const float PI = 3.14159265;
 
 /* Linear space shrinks the game's ambient far more than its sun, so restore the balance. */
 const float AMBIENT_BOOST = 3.2;
-const float SUN_BOOST = 1.7;
+const float SUN_BOOST = 1.3;		/* at Sun Strength 100, below the 1.7 this pack had */
+const float SUN_BOOST_OLD = 1.7;	/* what that was, so the sheen keeps its share of the sun */
+const float SKY_HIGH_TRIM = 0.45;	/* of the sky's fill left under an overhead sun */
 const float SATURATION = 0.88;
 
 uniform float u_night;	/* 0 by day, 1 once twilight has gone */
+
+/*
+ The Sun Strength setting, 0 to 2, 1 at 100: the direct sun and the sheen that comes off
+ the ground and the rider. 100 is the tuned sun, dimmer than the pack's old look, which
+ sits above it on the slider.
+*/
+uniform float u_sun_strength;
+
+/* The sun's world height: about 1 overhead, 0 at the horizon, negative at night. */
+uniform float u_sun_height;
 
 /*
  How much of the game's sun and sky light the Time of Day setting takes away: a low sun
@@ -24,9 +36,15 @@ vec3 light_tint()
 	return 1.0 - u_direct_loss;
 }
 
+/* The sun for the specular sheen, which shares in the setting but not the boost's value. */
+vec3 sun_power()
+{
+	return light_tint() * u_sun_strength * (SUN_BOOST / SUN_BOOST_OLD);
+}
+
 vec3 sun_boost()
 {
-	return SUN_BOOST * light_tint();
+	return SUN_BOOST * u_sun_strength * light_tint();
 }
 
 /*
@@ -54,10 +72,19 @@ vec3 to_gamma(vec3 c)
 	return pow(max(c, vec3(0.0)), vec3(1.0 / 2.2));
 }
 
+/*
+ The sun's climb from a low sun to overhead, 0 to 1. The sky's fill is a flat floor and the
+ sun is strongest up there, so the two together are what flattens the ground at noon.
+*/
+float sun_high()
+{
+	return smoothstep(0.6, 0.87, u_sun_height);
+}
+
 /* Squaring a tinted color exaggerates the tint, which turns full shade purple. */
 vec3 sky_light(vec3 ambient)
 {
-	vec3 c = to_linear(ambient) * AMBIENT_BOOST;
+	vec3 c = to_linear(ambient) * AMBIENT_BOOST * mix(1.0, SKY_HIGH_TRIM, sun_high());
 
 	return mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, 0.5) * (1.0 - u_ambient_loss);
 }
@@ -279,6 +306,7 @@ const float CLOUD_HEIGHT = 3200.0;	/* where its shadows and the flat clouds are 
 const float CLOUD_SIZE = 2500.0;	/* across a typical cloud */
 const float CLOUD_OPACITY = 0.85;	/* of the sun a thick cloud takes away */
 const float PUDDLE_SIZE = 18.0;
+const float PUDDLE_GLOOM = 0.55;	/* of the sky a puddle mirrors under a fully grey day */
 const float SNOW_PATCH_SIZE = 40.0;
 const vec3 SNOW_ALBEDO = vec3(0.8, 0.83, 0.88);
 const float NOISE_CELLS = 8.0;	/* the noise texture's lowest octave cells across, match WEATHER_NOISE_CELLS */
@@ -398,8 +426,12 @@ float snow_cover(vec3 world, float facing)
 	return smoothstep(0.3, 0.7, facing) * smoothstep(level - 0.1, level + 0.1, weather_fbm(world.xz / SNOW_PATCH_SIZE));
 }
 
-/* The sky a puddle mirrors, close to the horizon's colour. */
+/*
+ The sky a puddle mirrors, close to the horizon's colour. A grey day mirrors a grey sky:
+ the fog colour a shader is given is the track's, which rain leaves bright.
+*/
 vec3 sky_reflection(vec3 fog_color)
 {
-	return (u_hdr != 0 ? scene_from_gamma(fog_color) : to_linear(fog_color)) * (1.0 - u_ambient_loss);
+	return (u_hdr != 0 ? scene_from_gamma(fog_color) : to_linear(fog_color)) *
+	       (1.0 - u_ambient_loss) * mix(1.0, PUDDLE_GLOOM, weather_gloom());
 }
