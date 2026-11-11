@@ -245,13 +245,22 @@ void main()
 	vec3 ray = vec3(ndc.x / u_fx, ndc.y / u_fy, -1.0);
 	vec3 dir = normalize(to_world_dir(ray));
 	float dist = depth < 1.0 ? u_proj_b / (depth * 2.0 - 1.0 + u_proj_a) * length(ray) : 1e6;
-	float open = sky_open(dir);
+	float open = sky_open(dir), shade_on;
 
 	if (u_sharpen > 0.0)
 		c = sharpen(c);
-	c *= mix(1.0, occlusion.r, AO_STRENGTH);
-	/* Contact shadows only take away direct light, which is gone after sunset. */
-	c *= mix(1.0, occlusion.g, CONTACT_STRENGTH * clamp(dot(light_tint(), vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0));
+	/*
+	 Both of the depth pass's terms go with Shadow Strength, so 0 is the game with its own
+	 shadows off: nothing of the mod's shades the scene, and the track's baked shade (see
+	 u_baked_shadow) is what the ground has. AO goes with them because this is what it draws:
+	 the soft dark halo under a tyre and at the foot of anything close, fading out past 30 m,
+	 so it only shows up nearby. Left on at 0 it reads as a shadow the setting failed to remove.
+	*/
+	shade_on = step(0.0001, u_shadow_strength);
+	c *= mix(1.0, occlusion.r, AO_STRENGTH * shade_on);
+	/* Contact shadows take away direct light only, which is gone after sunset. */
+	c *= mix(1.0, occlusion.g, CONTACT_STRENGTH * shade_on *
+		 clamp(dot(light_tint(), vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0));
 	/*
 	 The sun's shadow comes from the map drawn at the end of this frame, from this
 	 frame's own draw calls, so it is never a frame behind the bike. The surface and its

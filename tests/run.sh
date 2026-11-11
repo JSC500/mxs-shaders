@@ -54,6 +54,10 @@ check "Sun Strength defaults to 100" "grep -q '^sun_strength=100' '$data/mxs-sha
 # cut across the ground and stayed there while the mod's own went away.
 check "the track's baked terrain shadow follows Shadow Strength" \
 	"grep -q 'u_baked_shadow' shaderpacks/default/terrain.fsh && grep -q 'u_baked_shadow' src/hooks.c"
+# AO is not a sun shadow, but it draws the soft halo under a tyre and at the foot of nearby objects,
+# so at Shadow Strength 0 it read as a shadow the setting had failed to remove.
+check "ambient occlusion and contact shadows go with Shadow Strength" \
+	"grep -q 'AO_STRENGTH \* shade_on' shaderpacks/default/post_final.fsh && grep -q 'CONTACT_STRENGTH \* shade_on' shaderpacks/default/post_final.fsh"
 check "the panel font loaded" "grep -q '^ui: font /' '$log'"
 check "the panel opened and closed three times" "[ \$(grep -c '^panel open:' '$log') = 3 ] && [ \$(grep -c '^panel closed:' '$log') = 3 ]"
 check "Escape closed the open panel without reaching the game, and reached it with the panel closed" "grep -q 'received 1 escape presses' '$out/game.txt'"

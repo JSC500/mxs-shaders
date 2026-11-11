@@ -1172,13 +1172,15 @@ static void time_of_day_apply(BOOL race)
 		/*
 		 The track bakes its own shadow into the terrain normal maps, and terrain.fsh multiplies
 		 sunlight by it. It is the same sun shaded a second time, fixed to the track's own light,
-		 and Shadow Strength never touched it: at 0 its hard edges still cut across the ground
-		 while the mod's shadow faded out. The mod's map replaces it while shadows are on, so the
-		 two are never drawn over each other, and Shadow Strength scales the only one left. With
-		 the mod's shadows off the track keeps its baked shade, which is its own look.
+		 so the two must never be drawn over each other: the mod's map replaces it while there is
+		 a shadow to draw, and Shadow Strength decides that. Above 0 the mod's shadow is drawn and
+		 the baked one is hidden; at 0 nothing of the mod's is left to shade with, so the track
+		 keeps its baked shade, which is its own look. Hiding it on the toggle alone left a track
+		 with neither shadow at Strength 0.
 		*/
 		if (g_loc_baked_shadow[prog[i]] >= 0)
-			my_glProgramUniform1f(prog[i], g_loc_baked_shadow[prog[i]], race && g_cfg_shadows ? 0.0f : 1.0f);
+			my_glProgramUniform1f(prog[i], g_loc_baked_shadow[prog[i]],
+					      race && g_cfg_shadows && g_cfg_shadow_strength > 0 ? 0.0f : 1.0f);
 	}
 }
 
@@ -1245,6 +1247,12 @@ static void shadow_set_receiver(GLuint prog, const float *far_matrix, const floa
 {
 	if (!prog || g_loc_shadow_matrix[prog] < 0)
 		return;
+	/* Shadow Strength 0 is no shadow: the track is drawn with the game's own light. */
+	if (g_cfg_shadow_strength <= 0) {
+		if (g_loc_shadow_on[prog] >= 0)
+			my_glProgramUniform1i(prog, g_loc_shadow_on[prog], 0);
+		return;
+	}
 	my_glProgramUniformMatrix4fv(prog, g_loc_shadow_matrix[prog], 1, 0, far_matrix);
 	if (g_loc_shadow_near_matrix[prog] >= 0)
 		my_glProgramUniformMatrix4fv(prog, g_loc_shadow_near_matrix[prog], 1, 0, near_matrix);

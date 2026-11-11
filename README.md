@@ -76,7 +76,7 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 | `saturation` | 110 | 0 to 200 | Colour strength. 100 leaves colours as they are, 0 is black and white |
 | `contrast` | 20 | 0 to 100 | Darker shadows and brighter highlights |
 | `split_tone` | 20 | 0 to 100 | Cool shadows and warm highlights |
-| `shadow_strength` | 55 | 0 to 100 | Shadow Strength in the panel: the share of a pixel's colour a sun shadow takes away. 100 makes shade black and 0 turns shadows off. Raise it where the sun is strong, lower it on a track whose shade is already bright |
+| `shadow_strength` | 55 | 0 to 100 | Shadow Strength in the panel: the share of a pixel's colour a sun shadow takes away. 100 makes shade black. Above 0 the mod draws its own shadow and hides the shadows the track baked into its ground; at 0 the mod shades nothing at all - no sun shadow, no contact shadows, no ambient occlusion, so not even the dark under a tyre - and the track's baked shadows are what you see. Raise it where the sun is strong, lower it on a track whose shade is already bright |
 | `bloom` | 100 | 0 to 200 | Glow around bright things, 0 turns it off |
 | `shadow_size` | 8192 | 512, 1024, 2048, 4096, 8192 | Shadow sharpness. Lower it on older GPUs: 512 uses a few MB of video memory for the wide shadow map where 8192 uses about 512 MB |
 | `msaa` | 8 | 0, 2, 4, 8 | Edge smoothing, 0 turns it off |

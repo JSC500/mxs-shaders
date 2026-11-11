@@ -74,12 +74,13 @@ These uniforms only need declaring to use them.
 | `u_sky_face_on`, `u_sky_face` | sprite | Set for each skybox face once the skybox has been read: the face's corners and texture span, so `sprite.fsh` can draw the atmosphere above the skyline |
 | `u_sun_strength`, `u_sun_height` | world shaders | The Sun Strength setting, 1 at 100, and the sun's world height, 0 at the horizon and negative at night. `common.glsl`'s `sun_boost()`, `sun_power()` and `sky_light()` apply them: 100 is the pack's tuned sun, and the sky's fill is trimmed as the sun climbs |
 | `u_parallax` | terrain | The `parallax` setting |
+| `u_baked_shadow` | terrain | 0 while the mod's own shadow is being drawn (a race, `shadows` on and Shadow Strength above 0), 1 while the track's baked shadow is the shadow. `mix(1.0, normal_map.g, u_baked_shadow)` keeps it or hides it |
 | `u_view_up` | model | World up in view space |
 | `u_sprite_mode` | sprite | 0 normal, 1 sky, 2 particle |
 | `u_sun_view`, `u_screen` | sprite | Sun direction and screen size |
 | `u_fog_amount`, `u_up`, `u_sun`, `u_camera_height` | `post_final.fsh` | The `fog` setting, world up, sun direction, camera height above the ground |
 | `u_bloom_amount` | `post_final.fsh` | The `bloom` setting, 1 at 100. At 0 the bloom passes don't run, so `u_bloom` isn't updated |
-| `u_shadow_strength` | `post_final.fsh` | The `shadow_strength` setting, 1 at 100: how much of a pixel's colour a sun shadow takes away |
+| `u_shadow_strength` | `post_final.fsh` | The `shadow_strength` setting, 1 at 100: how much of a pixel's colour a sun shadow takes away. At 0 the depth pass's other terms, AO and contact shadows, are off too, so nothing of the mod's shades the scene |
 | `u_motion`, `u_blur_near`, `u_reproject` | `post_lens.fsh` | Blur per frame of movement, sharp distance, this frame's view space to last frame's screen |
 | `u_dof`, `u_saturation`, `u_contrast`, `u_split_tone` | `post_lens.fsh` | The settings, 1 at 100 |
 
