@@ -67,6 +67,7 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 | `clock` | 0 | 0 to 96 | Time of Day in the panel. 0 is the track's own light, then quarter hours: 1 is 00:00, 49 is noon and 96 is 23:45. The sun rises around 05:00 and sets around 19:00, with twilight after, and at night a full moon lights the track and casts the shadows. Sun Turn turns the sun's whole path. It applies to every track, so change it when you change tracks. It replaces Day to Night and Sun Height, whose old values are carried over |
 | `dynamic_sky` | 1 | 0 or 1 | Dynamic Sky in the panel. 1 draws a real sky with volumetric clouds over each track's skybox, keeping any mountains or trees painted into it. 0 keeps the track's own painted sky, which still darkens with Time of Day |
 | `cloud_cover` | 20 | 0 to 100 | Cloud Cover in the panel: how much of the sky is cloud, from clear through scattered clouds to a grey overcast. Rain, Storm and Snow cover the sky at least as much as an overcast. It replaces the old Cloudy weather, whose setting is carried over |
+| `sun_strength` | 100 | 0 to 400 | Sun Strength in the panel: how strong the sun is, on the ground, on the rider and in the sheen off both. 200 is the tuned sun, dimmer at midday than earlier versions were, whose brighter look is about 260; the scale is doubled, so the default 100 is half of it and looks the way 50 did before, which is where most tracks sit. Raise it toward 200 where the sun should bite, lower it on a track that is still too bright. 0 leaves the sky's light alone |
 | `cloud_quality` | 2 | 0 to 3 | Cloud Quality in the panel: Off, Low, Medium or High. Off draws flat clouds, which cost almost nothing. Low suits older GPUs, High is sharpest |
 | `fog` | 10 | 0 to 300 | Haze strength |
 | `parallax` | 200 | 0 to 200 | Depth of ruts and dirt |
@@ -75,8 +76,9 @@ Each shader pack remembers its own sliders. In the file, the default pack's are 
 | `saturation` | 110 | 0 to 200 | Colour strength. 100 leaves colours as they are, 0 is black and white |
 | `contrast` | 20 | 0 to 100 | Darker shadows and brighter highlights |
 | `split_tone` | 20 | 0 to 100 | Cool shadows and warm highlights |
+| `shadow_strength` | 55 | 0 to 100 | Shadow Strength in the panel: the share of a pixel's colour a sun shadow takes away. 100 makes shade black. Above 0 the mod draws its own shadow and hides the shadows the track baked into its ground; at 0 the mod shades nothing at all - no sun shadow, no contact shadows, no ambient occlusion, so not even the dark under a tyre - and the track's baked shadows are what you see. Raise it where the sun is strong, lower it on a track whose shade is already bright |
 | `bloom` | 100 | 0 to 200 | Glow around bright things, 0 turns it off |
-| `shadow_size` | 8192 | 1024, 2048, 4096, 8192 | Shadow sharpness. Lower it on older GPUs, 8192 uses about 512 MB of video memory |
+| `shadow_size` | 8192 | 512, 1024, 2048, 4096, 8192 | Shadow sharpness. Lower it on older GPUs: 512 uses a few MB of video memory for the wide shadow map where 8192 uses about 512 MB |
 | `msaa` | 8 | 0, 2, 4, 8 | Edge smoothing, 0 turns it off |
 | `anisotropy` | 16 | 1, 2, 4, 8, 16 | Texture sharpness at an angle, 1 turns it off |
 | `borderless` | 1 | 0 or 1 | See below |

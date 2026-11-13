@@ -142,8 +142,8 @@ enum { ROLE_NONE, ROLE_TERRAIN, ROLE_MODEL };
 
 /* Cascade 0 covers the distance, cascade 1 is a sharper map around the rider. */
 #define SHADOW_CASCADES 2
-#define SHADOW_NEAR_SIZE 4096	/* thin parts like levers blink at coarser sizes */
-#define SHADOW_NEAR_RANGE 20.0f
+#define SHADOW_NEAR_TEXEL 0.0390625f	/* game units a sharp texel covers, 2 * 80 / 4096; coarser makes levers blink */
+#define SHADOW_NEAR_RANGE 80.0f	/* at Low and Ultra, see shadow_near_range; centred half ahead */
 #define SHADOW_RANGE 500	/* the wide map's reach in front of the camera, see SHADOW_DEPTH_RANGE */
 #define SHADOW_MAX_MOTION 2.0f	/* per frame, more than this is a camera cut */
 #define GROUND_FOLLOW 0.002f	/* per frame, slow enough to ride out jumps */
@@ -164,10 +164,35 @@ static GLuint g_reflection_prog;
 static int g_hdr_on;
 
 static int g_cfg_shadows, g_cfg_shadow_size, g_cfg_shadow_range;
+
+/*
+ The sharp map's reach grows with Shadow Quality, and its size follows at one texel size, so the
+ reach grows without softening what is already sharp. Ultra keeps the shortest because its wide map
+ is already the finest, and a longer reach there would only probe further than it can show.
+*/
+static float shadow_near_range(void)
+{
+	switch (g_cfg_shadow_size) {
+	case 2048:
+		return 110.0f;
+	case 4096:
+		return 140.0f;
+	default:
+		return SHADOW_NEAR_RANGE;
+	}
+}
+
+/* The sharp map's size, so its texel stays SHADOW_NEAR_TEXEL however far its reach goes. */
+static int shadow_near_size(void)
+{
+	return (int)(2.0f * shadow_near_range() / SHADOW_NEAR_TEXEL + 0.5f);
+}
 static BOOL g_shadow_enabled;
-static GLuint g_shadow_fbo[2][SHADOW_CASCADES], g_shadow_tex[2][SHADOW_CASCADES];
-static int g_shadow_write;
-static BOOL g_shadow_frame;	/* this frame's map has been started */
+static GLuint g_shadow_fbo[SHADOW_CASCADES], g_shadow_tex[SHADOW_CASCADES];
+static int g_shadow_size_made;	/* the wide map's size, which Shadow Quality changes live */
+static int g_shadow_near_made;	/* and the sharp map's, which follows its reach */
+static void shadow_maps_create(BOOL wide_only);	/* objects are made once, storage follows the size */
+static BOOL g_shadow_frame;	/* this frame draws the 3D scene, so its map can be drawn */
 static BOOL g_shadow_ready;	/* a finished map exists to sample */
 static unsigned char *g_rec, *g_rec_prev;
 static size_t g_rec_used, g_rec_prev_used;
@@ -208,12 +233,12 @@ static float g_light_view[3];	/* the sun everything uses, after the player's cha
 static float g_light_game[3];	/* as the game sent it */
 static BOOL g_have_light;
 static float g_light_matrix[SHADOW_CASCADES][16];	/* world to shadow map */
-static float g_shadow_from_view[SHADOW_CASCADES][16];
-static float g_shadow_from_view_dyn[SHADOW_CASCADES][16];	/* moved on by the camera's step */
+static float g_shadow_from_view[SHADOW_CASCADES][16];	/* this frame's view space to each map */
 static float g_view_up[3], g_camera_y, g_ground_y;
 static float g_view_step[16];	/* this frame's view space to last frame's */
 static float g_frame_seconds;
 static float g_shadow_receiver[16];	/* this frame's view space to the wide map */
+static float g_shadow_receiver_near[16];
 static BOOL g_shadow_receiver_valid;
 static float g_prev_inv_view[16];
 static BOOL g_have_prev_cam;
@@ -246,9 +271,11 @@ static BOOL g_cursor_hidden;
 static BOOL g_reload_requested, g_enabled_changed;	/* from the panel, done at the frame boundary */
 static int g_cfg_fog, g_cfg_parallax, g_cfg_motion_blur, g_cfg_dof, g_cfg_saturation, g_cfg_contrast, g_cfg_split_tone;
 static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_clock, g_cfg_ui_key, g_cfg_enabled;
-static int g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_bloom, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_turn;
+static int g_cfg_shadow_strength, g_cfg_sharpen, g_cfg_texture_sharpness, g_cfg_bloom, g_cfg_lens_flare, g_cfg_goggles, g_cfg_sun_turn;
+static int g_cfg_sun_strength;
 static int g_cfg_weather, g_cfg_weather_amount, g_cfg_wet, g_cfg_cloud_cover, g_cfg_cloud_quality;
 static GLint g_loc_cloud_cover[MAX_IDS];
+static GLint g_loc_sun_strength[MAX_IDS], g_loc_sun_height[MAX_IDS], g_loc_baked_shadow[MAX_IDS];
 static float g_weather_time;	/* seconds since the first frame, for drifting clouds and falling rain */
 
 typedef void (WINAPI *glGenObjects_t)(GLsizei, GLuint *);
@@ -550,7 +577,7 @@ static void frame_boundary(const char *source)
 		time_of_day_apply(FALSE);
 	}
 
-	/* This frame's recording is what the next frame's shadows are drawn from. */
+	/* This frame's recording becomes this frame's shadow map, and the last one its fallback. */
 	{
 		unsigned char *spare = g_rec_prev;
 
@@ -585,6 +612,11 @@ static void frame_boundary(const char *source)
 	if (g_enabled_changed)
 		enabled_apply();
 	g_enabled_changed = FALSE;
+	/* Shadow Quality is live: its map's storage follows here, where nothing is mid-draw. */
+	/* The sharp map's size follows its reach, so a tier change can resize either map. */
+	if (g_shadow_enabled && g_shadow_tex[0] &&
+	    (g_shadow_size_made != g_cfg_shadow_size || g_shadow_near_made != shadow_near_size()))
+		shadow_maps_create(g_shadow_near_made == shadow_near_size());
 	if (g_lod_bias != lod_bias_wanted())
 		texture_filter_apply();
 
@@ -638,7 +670,9 @@ typedef void (WINAPI *glDeleteVertexArrays_t)(GLsizei, const GLuint *);
 static glDeleteVertexArrays_t real_glDeleteVertexArrays;
 static glUseProgram_t real_glUseProgram;
 static glDrawRangeElements_t real_glDrawRangeElements;
-static void shadow_replay(void);
+static void shadow_replay(const unsigned char *stream, size_t used, GLuint prog, GLuint vao);
+static void shadow_frame_end(void);
+static void shadow_forward(const float *inv_view);
 
 /* --- shadows ---
 
@@ -997,26 +1031,24 @@ static void weather_noise_create(void)
 	real_glActiveTexture(g_active_unit);
 }
 
-static void shadow_create(void)
+/*
+ (Re)allocates the maps' storage at the sizes they have now, on objects shadow_create makes.
+ Shadow Quality is live, so this runs again at a frame boundary when it changes, and it has to:
+ the pass draws into the map at g_cfg_shadow_size (the replay's viewport), while the shaders
+ sample the whole texture, so a map left at its old size takes that draw in one corner of itself
+ and the rest of the track stays unshadowed.
+*/
+static void shadow_maps_create(BOOL wide_only)
 {
 	static const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-	static const unsigned char white_pixel[4] = { 255, 255, 255, 255 };
 	GLenum status;
-	int i, c;
+	int i, maps = wide_only ? 1 : SHADOW_CASCADES;
 
-	weather_noise_create();
-	if (!g_cfg_shadows || !my_glProgramUniformMatrix4fv || !my_glProgramUniform1i)
-		return;
+	for (i = 0; i < maps; i++) {
+		int size = i ? shadow_near_size() : g_cfg_shadow_size;
 
-	g_shadow_enabled = TRUE;
-	my_glGenFramebuffers(2 * SHADOW_CASCADES, g_shadow_fbo[0]);
-	my_glGenTextures(2 * SHADOW_CASCADES, g_shadow_tex[0]);
-	for (i = 0; i < 2 * SHADOW_CASCADES; i++) {
-		int size = i % SHADOW_CASCADES ? SHADOW_NEAR_SIZE : g_cfg_shadow_size;
-
-		c = i / SHADOW_CASCADES;
-		real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + i % SHADOW_CASCADES);
-		real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[c][i % SHADOW_CASCADES]);
+		real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + i);
+		real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[i]);
 		real_glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, size, size,
 				  0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
 		real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1027,20 +1059,39 @@ static void shadow_create(void)
 		real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
 		real_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
 
-		real_glBindFramebuffer(GL_FRAMEBUFFER, g_shadow_fbo[c][i % SHADOW_CASCADES]);
+		real_glBindFramebuffer(GL_FRAMEBUFFER, g_shadow_fbo[i]);
 		real_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
-					    g_shadow_tex[c][i % SHADOW_CASCADES], 0);
+					    g_shadow_tex[i], 0);
 		my_glDrawBuffer(GL_NONE);
 		my_glReadBuffer(GL_NONE);
 		status = my_glCheckFramebufferStatus(GL_FRAMEBUFFER);
+		real_glBindTexture(GL_TEXTURE_2D, 0);
 		if (status != GL_FRAMEBUFFER_COMPLETE) {
 			log_msg("shadow framebuffer incomplete (%x), shadows off", status);
 			g_shadow_enabled = FALSE;
-			break;
+			real_glActiveTexture(GL_TEXTURE0);
+			return;
 		}
-		real_glBindTexture(GL_TEXTURE_2D, 0);
 	}
 	real_glActiveTexture(GL_TEXTURE0);
+	g_shadow_size_made = g_cfg_shadow_size;
+	g_shadow_near_made = shadow_near_size();
+	log_msg("shadow maps %d range %d, %d range %.0f", g_cfg_shadow_size, g_cfg_shadow_range,
+		shadow_near_size(), shadow_near_range());
+}
+
+static void shadow_create(void)
+{
+	static const unsigned char white_pixel[4] = { 255, 255, 255, 255 };
+
+	weather_noise_create();
+	if (!g_cfg_shadows || !my_glProgramUniformMatrix4fv || !my_glProgramUniform1i)
+		return;
+
+	g_shadow_enabled = TRUE;
+	my_glGenFramebuffers(SHADOW_CASCADES, g_shadow_fbo);
+	my_glGenTextures(SHADOW_CASCADES, g_shadow_tex);
+	shadow_maps_create(FALSE);
 	my_glGenTextures(1, &g_white_tex);
 	real_glBindTexture(GL_TEXTURE_2D, g_white_tex);
 	real_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white_pixel);
@@ -1048,8 +1099,6 @@ static void shadow_create(void)
 	real_glBindTexture(GL_TEXTURE_2D, g_unit_tex[0]);
 	bind_current_fb();
 	if (g_shadow_enabled) {
-		log_msg("shadow maps %d range %d, %d range %.0f", g_cfg_shadow_size, g_cfg_shadow_range,
-			SHADOW_NEAR_SIZE, SHADOW_NEAR_RANGE);
 		if (!g_rec) {
 			g_rec = malloc(REC_ARENA);
 			g_rec_prev = malloc(REC_ARENA);
@@ -1125,6 +1174,23 @@ static void time_of_day_apply(BOOL race)
 			my_glProgramUniform3fv(prog[i], g_loc_direct_loss[prog[i]], 1, race ? g_direct_loss : none);
 		if (g_loc_ambient_loss[prog[i]] >= 0)
 			my_glProgramUniform3fv(prog[i], g_loc_ambient_loss[prog[i]], 1, race ? g_ambient_loss : none);
+		if (g_loc_sun_strength[prog[i]] >= 0)
+			my_glProgramUniform1f(prog[i], g_loc_sun_strength[prog[i]], race ? g_cfg_sun_strength / 200.0f : 1.0f);
+		/* The sky's fill gives way only in a race: the menus keep it as it is. */
+		if (g_loc_sun_height[prog[i]] >= 0)
+			my_glProgramUniform1f(prog[i], g_loc_sun_height[prog[i]], race ? g_sun_world[1] : 0.0f);
+		/*
+		 The track bakes its own shadow into the terrain normal maps, and terrain.fsh multiplies
+		 sunlight by it. It is the same sun shaded a second time, fixed to the track's own light,
+		 so the two must never be drawn over each other: the mod's map replaces it while there is
+		 a shadow to draw, and Shadow Strength decides that. Above 0 the mod's shadow is drawn and
+		 the baked one is hidden; at 0 nothing of the mod's is left to shade with, so the track
+		 keeps its baked shade, which is its own look. Hiding it on the toggle alone left a track
+		 with neither shadow at Strength 0.
+		*/
+		if (g_loc_baked_shadow[prog[i]] >= 0)
+			my_glProgramUniform1f(prog[i], g_loc_baked_shadow[prog[i]],
+					      race && g_cfg_shadows && g_cfg_shadow_strength > 0 ? 0.0f : 1.0f);
 	}
 }
 
@@ -1186,10 +1252,17 @@ static void weather_apply(const float *inv_view)
 	}
 }
 
+/* The game's shaders can take the map too, for when there is no post pass to shade with. */
 static void shadow_set_receiver(GLuint prog, const float *far_matrix, const float *near_matrix)
 {
 	if (!prog || g_loc_shadow_matrix[prog] < 0)
 		return;
+	/* Shadow Strength 0 is no shadow: the track is drawn with the game's own light. */
+	if (g_cfg_shadow_strength <= 0) {
+		if (g_loc_shadow_on[prog] >= 0)
+			my_glProgramUniform1i(prog, g_loc_shadow_on[prog], 0);
+		return;
+	}
 	my_glProgramUniformMatrix4fv(prog, g_loc_shadow_matrix[prog], 1, 0, far_matrix);
 	if (g_loc_shadow_near_matrix[prog] >= 0)
 		my_glProgramUniformMatrix4fv(prog, g_loc_shadow_near_matrix[prog], 1, 0, near_matrix);
@@ -1224,8 +1297,7 @@ static void frame_step_update(const float *inv_view)
 /* Called with this frame's view matrix, before the first terrain draw. */
 static void shadow_frame_start(const float *view)
 {
-	float inv_view[16], shifted[16], receiver[SHADOW_CASCADES][16];
-	float motion[3] = { 0.0f, 0.0f, 0.0f };
+	float inv_view[16];
 	int c;
 
 	/* Shadow frames carry every other effect, so without one the game draws as it would alone. */
@@ -1263,44 +1335,20 @@ static void shadow_frame_start(const float *view)
 	}
 
 	if (!build_light_matrix(g_light_matrix[0], inv_view, (float)g_cfg_shadow_range, g_cfg_shadow_size) ||
-	    !build_light_matrix(g_light_matrix[1], inv_view, SHADOW_NEAR_RANGE, SHADOW_NEAR_SIZE))
+	    !build_light_matrix(g_light_matrix[1], inv_view, shadow_near_range(), shadow_near_size()))
 		return;
 
 	/*
-	 The maps are drawn from last frame's recording, now that this frame's camera
-	 is known. The chase camera moves with the rider, so its real movement says
-	 where they are, including frames where physics ticked twice.
+	 With post there is a pass at the end of the frame that reads a map drawn from this
+	 frame's own draw calls (shadow_frame_end), so nothing here has to guess anything.
+	 Without one (msaa under 2 draws straight to the window) the map can only be last
+	 frame's, and it goes into the game's shaders instead: a frame behind, never sliding.
 	*/
-	if (g_shadow_ready && g_have_prev_cam && !g_replay_block) {
-		for (c = 0; c < 3; c++)
-			motion[c] = inv_view[12 + c] - g_prev_inv_view[12 + c];
-		if (v_dot(motion, motion) > SHADOW_MAX_MOTION * SHADOW_MAX_MOTION)
-			motion[0] = motion[1] = motion[2] = 0.0f;
-
-		memcpy(shifted, g_prev_inv_view, sizeof shifted);
-		for (c = 0; c < 3; c++)
-			shifted[12 + c] += motion[c];
-		for (c = 0; c < SHADOW_CASCADES; c++) {
-			mat_mul(g_shadow_from_view[c], g_light_matrix[c], g_prev_inv_view);
-			mat_mul(g_shadow_from_view_dyn[c], g_light_matrix[c], shifted);
-		}
-
-		g_shadow_write ^= 1;
-		shadow_replay();
-
-		for (c = 0; c < SHADOW_CASCADES; c++)
-			mat_mul(receiver[c], g_light_matrix[c], inv_view);
-		memcpy(g_shadow_receiver, receiver[0], sizeof g_shadow_receiver);
-		g_shadow_receiver_valid = TRUE;
-		shadow_set_receiver(g_terrain_prog, receiver[0], receiver[1]);
-		shadow_set_receiver(g_model_prog, receiver[0], receiver[1]);
-		shadow_set_receiver(g_sprite_prog, receiver[0], receiver[1]);
-		for (c = 0; c < SHADOW_CASCADES; c++) {
-			real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + c);
-			real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[g_shadow_write][c]);
-		}
-		real_glActiveTexture(g_active_unit);
-	}
+	for (c = 0; c < SHADOW_CASCADES; c++)
+		mat_mul(g_shadow_from_view[c], g_light_matrix[c], inv_view);
+	g_shadow_receiver_valid = FALSE;
+	if (!g_cfg_post || !g_fbo || !post_ready())
+		shadow_forward(inv_view);
 
 	memcpy(g_prev_inv_view, inv_view, sizeof g_prev_inv_view);
 	g_have_prev_cam = TRUE;
@@ -2064,7 +2112,7 @@ static void terrain_fill_visit(int x, int z, int n)
 	}
 }
 
-/* Goes with the recording: what this frame skipped is drawn with the next frame's shadows. */
+/* Goes with the recording: what this frame skipped is drawn with this frame's shadows. */
 static void terrain_frame_end(void)
 {
 	int x, z, n;
@@ -2602,6 +2650,8 @@ static void run_post(void)
 	g_post_done = TRUE;
 	if (!g_cfg_post || !g_fbo || !g_terrain_prog)
 		return;
+	/* The map is drawn here, at the end of the frame, from what the frame drew. */
+	shadow_frame_end();
 	s.scene_fbo = g_fbo;
 	s.w = g_fbo_w;
 	s.h = g_fbo_h;
@@ -2620,6 +2670,7 @@ static void run_post(void)
 	s.view_up = g_view_up;
 	s.fog_color = fog && fog->data ? fog->data : default_fog;
 	s.shadow_matrix = g_shadow_receiver_valid ? g_shadow_receiver : NULL;
+	s.shadow_near_matrix = g_shadow_receiver_valid ? g_shadow_receiver_near : NULL;
 	s.camera_height = g_camera_y - g_ground_y;
 	s.fog_amount = g_cfg_fog / 100.0f;
 	s.dof = g_cfg_dof / 100.0f;
@@ -2627,6 +2678,7 @@ static void run_post(void)
 	s.contrast = g_cfg_contrast / 100.0f;
 	s.split_tone = g_cfg_split_tone / 100.0f;
 	s.sharpen = g_cfg_sharpen / 100.0f;
+	s.shadow_strength = g_cfg_shadow_strength / 100.0f;
 	s.bloom = g_cfg_bloom / 100.0f;
 	s.lens_flare = g_cfg_lens_flare / 100.0f;
 	s.goggles = g_cfg_goggles && g_frame_trimmed;
@@ -2739,8 +2791,8 @@ static void present(HDC dc)
 
 /* --- the settings panel --- */
 
-static const int g_shadow_sizes[] = { 1024, 2048, 4096, 8192 };
-static const char *const g_shadow_names[] = { "Low", "Medium", "High", "Ultra" };
+static const int g_shadow_sizes[] = { 512, 1024, 2048, 4096, 8192 };
+static const char *const g_shadow_names[] = { "Ultra Low", "Low", "Medium", "High", "Ultra" };
 static const int g_msaa_levels[] = { 0, 2, 4, 8 };
 static const int g_aniso_levels[] = { 1, 2, 4, 8, 16 };
 /* Cloudy became Cloud Cover, its number stays unused so old ini files read the same. */
@@ -2785,6 +2837,8 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_LOOK, "Saturation", L"saturation", g_cfg_saturation, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Contrast", L"contrast", g_cfg_contrast, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Split Toning", L"split_tone", g_cfg_split_tone, 0, 100, 5),
+	/* How dark a sun shadow goes: the share of the pixel full shade takes away, 0 is no shadow. */
+	SLIDER(UI_TAB_LOOK, "Shadow Strength", L"shadow_strength", g_cfg_shadow_strength, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Sharpen", L"sharpen", g_cfg_sharpen, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Texture Sharpness", L"texture_sharpness", g_cfg_texture_sharpness, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Bloom", L"bloom", g_cfg_bloom, 0, 200, 5),
@@ -2798,10 +2852,12 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_WEATHER, "Cloud Cover", L"cloud_cover", g_cfg_cloud_cover, 0, 100, 5),
 	SLIDER(UI_TAB_WEATHER, "Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
 	SLIDER(UI_TAB_WEATHER, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
+	/* The sun's strength, 100 the pack's tuned sun: the old, brighter look is about 130. */
+	SLIDER(UI_TAB_WEATHER, "Sun Strength", L"sun_strength", g_cfg_sun_strength, 0, 400, 10),
 
 	TOGGLE(UI_TAB_DISPLAY, "Hide Game HUD", L"hide_hud", g_cfg_hide_hud, FALSE),
 	TOGGLE(UI_TAB_DISPLAY, "Hide Cursor in Race", L"hide_cursor", g_cfg_hide_cursor, FALSE),
-	NAMED_CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes, g_shadow_names, TRUE),
+	NAMED_CHOICE(UI_TAB_DISPLAY, "Shadow Quality", L"shadow_size", g_cfg_shadow_size, g_shadow_sizes, g_shadow_names, FALSE),
 	NAMED_CHOICE(UI_TAB_DISPLAY, "Cloud Quality", L"cloud_quality", g_cfg_cloud_quality, g_cloud_qualities, g_cloud_quality_names, FALSE),
 	CHOICE(UI_TAB_DISPLAY, "Antialiasing", L"msaa", g_cfg_msaa, g_msaa_levels),
 	CHOICE(UI_TAB_DISPLAY, "Texture Filtering", L"anisotropy", g_cfg_aniso, g_aniso_levels),
@@ -3589,6 +3645,18 @@ static void program_refresh(GLuint program)
 		g_loc_weather[program] = real_glGetUniformLocation(program, "u_weather");
 		g_loc_weather_amount[program] = real_glGetUniformLocation(program, "u_weather_amount");
 		g_loc_cloud_cover[program] = real_glGetUniformLocation(program, "u_cloud_cover");
+		g_loc_sun_strength[program] = real_glGetUniformLocation(program, "u_sun_strength");
+		g_loc_sun_height[program] = real_glGetUniformLocation(program, "u_sun_height");
+		g_loc_baked_shadow[program] = real_glGetUniformLocation(program, "u_baked_shadow");
+		/*
+		 The sun's setting until the first race frame sends it: an unset float is 0, and the
+		 menus draw before any race frame, where a pack's sun must not start black.
+		*/
+		if (g_loc_sun_strength[program] >= 0 && my_glProgramUniform1f)
+			my_glProgramUniform1f(program, g_loc_sun_strength[program], 1.0f);
+		/* Same reason: the menus must keep the track's baked shadow, not start without it. */
+		if (g_loc_baked_shadow[program] >= 0 && my_glProgramUniform1f)
+			my_glProgramUniform1f(program, g_loc_baked_shadow[program], 1.0f);
 		g_loc_wet[program] = real_glGetUniformLocation(program, "u_wet");
 		g_loc_weather_noise[program] = real_glGetUniformLocation(program, "u_weather_noise");
 
@@ -3804,11 +3872,14 @@ static void load_live_settings(void)
 	g_cfg_saturation = pack_int(L"saturation", 110);
 	g_cfg_contrast = pack_int(L"contrast", 20);
 	g_cfg_split_tone = pack_int(L"split_tone", 20);
+	g_cfg_shadow_strength = min(max(pack_int(L"shadow_strength", 55), 0), 100);
 	g_cfg_sharpen = pack_int(L"sharpen", 30);
 	g_cfg_texture_sharpness = pack_int(L"texture_sharpness", 0);
 	g_cfg_bloom = pack_int(L"bloom", 100);
 	g_cfg_lens_flare = pack_int(L"lens_flare", 50);
 	g_cfg_sun_turn = pack_int(L"sun_turn", 0);
+	/* The scale is doubled: 200 is the tuned sun, so 100, the default, is half of it. */
+	g_cfg_sun_strength = min(max(pack_int(L"sun_strength", 100), 0), 400);
 	g_cfg_goggles = ini_int(L"goggles", 0);
 	g_cfg_weather = min(max(ini_int(L"weather", WEATHER_CLEAR), WEATHER_CLEAR), WEATHER_SNOW);
 	g_cfg_weather_amount = pack_int(L"weather_amount", 60);
@@ -4026,7 +4097,7 @@ static void shadow_pass_uniforms(GLuint prog, const float *projection, int pass)
 static BOOL terrain_block_on_map(int cascade, float x, float z, float scale)
 {
 	const float *m = g_light_matrix[cascade];
-	float range = cascade ? SHADOW_NEAR_RANGE : (float)g_cfg_shadow_range;
+	float range = cascade ? shadow_near_range() : (float)g_cfg_shadow_range;
 	float cx = x + scale * 0.5f, cz = z + scale * 0.5f;
 	float reach = 1.0f + (scale * 0.71f + TERRAIN_HEIGHT_MARGIN) / range;
 
@@ -4057,7 +4128,6 @@ static void replay_stream(const unsigned char *stream, size_t used, GLuint prog,
 	GLint offset_real = offset ? offset->real : -1, scale_real = scale ? scale->real : -1;
 	const float *block_offset = NULL, *model_view = NULL;
 	float block_scale = 0.0f;
-	int dynamic_now = 0;
 	size_t at = 0;
 
 	while (at < used) {
@@ -4068,14 +4138,6 @@ static void replay_stream(const unsigned char *stream, size_t used, GLuint prog,
 
 		if ((c->type == REC_DRAWELEMENTS || c->type == REC_DRAWRANGE) && state_only)
 			continue;
-
-		/* Riders move on before the map is used, scenery doesn't. */
-		if ((c->type == REC_DRAWELEMENTS || c->type == REC_DRAWRANGE) && prog == g_model_prog &&
-		    c->e != DRAW_NO_SHADOW && (c->e == DRAW_DYNAMIC) != dynamic_now) {
-			dynamic_now = c->e == DRAW_DYNAMIC;
-			my_glProgramUniformMatrix4fv(prog, g_loc_proj[prog], 1, 0, dynamic_now ?
-						     g_shadow_from_view_dyn[cascade] : g_shadow_from_view[cascade]);
-		}
 
 		/* Scenery is drawn for the view too, and little of it is near the near map. */
 		if (prog == g_model_prog) {
@@ -4151,7 +4213,7 @@ static void draw_rigid(int cascade)
 	real_glUseProgram(g_model_prog);
 	if (nb->real >= 0)
 		real_glUniform1i(nb->real, 0);
-	my_glProgramUniformMatrix4fv(g_model_prog, g_loc_proj[g_model_prog], 1, 0, g_shadow_from_view_dyn[cascade]);
+	my_glProgramUniformMatrix4fv(g_model_prog, g_loc_proj[g_model_prog], 1, 0, g_shadow_from_view[cascade]);
 	real_glActiveTexture(GL_TEXTURE0 + unit);
 	real_glBindTexture(GL_TEXTURE_2D, g_white_tex);
 
@@ -4214,30 +4276,30 @@ static void draw_terrain_fill(int cascade)
 	real_glBindTexture(GL_TEXTURE_2D, g_unit_tex[heights->value]);
 }
 
-static void replay_cascade(int cascade)
+static void replay_cascade(int cascade, const unsigned char *stream, size_t used, GLuint prog, GLuint vao)
 {
-	int size = cascade ? SHADOW_NEAR_SIZE : g_cfg_shadow_size;
+	int size = cascade ? shadow_near_size() : g_cfg_shadow_size;
 
-	real_glBindFramebuffer(GL_FRAMEBUFFER, g_shadow_fbo[g_shadow_write][cascade]);
+	real_glBindFramebuffer(GL_FRAMEBUFFER, g_shadow_fbo[cascade]);
 	real_glViewport(0, 0, size, size);
 	real_glClear(GL_DEPTH_BUFFER_BIT);
 
 	shadow_pass_uniforms(g_terrain_prog, g_shadow_from_view[cascade], 1);
 	shadow_pass_uniforms(g_model_prog, g_shadow_from_view[cascade], 1);
 
-	real_glUseProgram(g_rec_prev_prog);
-	real_glBindVertexArray(g_rec_prev_vao);
-	replay_stream(g_rec_prev, g_rec_prev_used, g_rec_prev_prog, g_rec_prev_vao, cascade);
+	real_glUseProgram(prog);
+	real_glBindVertexArray(vao);
+	replay_stream(stream, used, prog, vao, cascade);
 	draw_terrain_fill(cascade);
 	if (g_rigid_needed)
 		draw_rigid(cascade);
 }
 
 /*
- Runs partway into a frame, from last frame's recording. Afterwards this frame's
- own recording is applied again, so the game finds GL as it left it moments ago.
+ Draws the map from one recording, then puts the game's state back: the same stream's
+ state changes are replayed without its draws, so GL ends where the game left it.
 */
-static void shadow_replay(void)
+static void shadow_replay(const unsigned char *stream, size_t used, GLuint prog, GLuint vao)
 {
 	GLboolean depth = my_glIsEnabled(GL_DEPTH_TEST), cull = my_glIsEnabled(GL_CULL_FACE);
 	GLboolean clamp = my_glIsEnabled(GL_DEPTH_CLAMP);
@@ -4249,7 +4311,7 @@ static void shadow_replay(void)
 	real_glEnable(GL_DEPTH_CLAMP);
 	real_glDepthMask(1);
 	for (c = 0; c < SHADOW_CASCADES; c++)
-		replay_cascade(c);
+		replay_cascade(c, stream, used, prog, vao);
 
 	if (g_terrain_prog)
 		shadow_pass_uniforms(g_terrain_prog, g_proj_value[g_terrain_prog], 0);
@@ -4266,12 +4328,78 @@ static void shadow_replay(void)
 	real_glViewport(g_vp[0], g_vp[1], g_vp[2], g_vp[3]);
 	bind_current_fb();
 
-	real_glUseProgram(g_rec_start_prog);
-	real_glBindVertexArray(g_rec_start_vao);
-	replay_stream(g_rec, g_rec_used, g_rec_start_prog, g_rec_start_vao, REPLAY_STATE_ONLY);
+	real_glUseProgram(prog);
+	real_glBindVertexArray(vao);
+	replay_stream(stream, used, prog, vao, REPLAY_STATE_ONLY);
 	real_glUseProgram(g_cur_prog);
 	real_glBindVertexArray(g_cur_vao);
 	real_glActiveTexture(g_active_unit);
+}
+
+/*
+ No post pass to shade the finished frame, so the map goes into the game's shaders: last
+ frame's recording, drawn and sampled through one matrix, so it sits a frame behind the
+ bike instead of sliding against it.
+*/
+static void shadow_forward(const float *inv_view)
+{
+	static BOOL logged;
+	int c;
+
+	if (!g_shadow_ready || !g_have_prev_cam || g_replay_block)
+		return;
+	for (c = 0; c < SHADOW_CASCADES; c++)
+		mat_mul(g_shadow_from_view[c], g_light_matrix[c], g_prev_inv_view);
+	shadow_replay(g_rec_prev, g_rec_prev_used, g_rec_prev_prog, g_rec_prev_vao);
+	memcpy(g_shadow_receiver, g_shadow_from_view[0], sizeof g_shadow_receiver);
+	memcpy(g_shadow_receiver_near, g_shadow_from_view[1], sizeof g_shadow_receiver_near);
+	g_shadow_receiver_valid = TRUE;
+	shadow_set_receiver(g_terrain_prog, g_shadow_receiver, g_shadow_receiver_near);
+	shadow_set_receiver(g_model_prog, g_shadow_receiver, g_shadow_receiver_near);
+	shadow_set_receiver(g_sprite_prog, g_shadow_receiver, g_shadow_receiver_near);
+	for (c = 0; c < SHADOW_CASCADES; c++) {
+		real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + c);
+		real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[c]);
+	}
+	real_glActiveTexture(g_active_unit);
+	if (!logged) {
+		logged = TRUE;
+		log_msg("shadows: no post pass, so the game's shaders get last frame's map");
+	}
+}
+
+/*
+ The frame's shadow map, drawn from the frame's own recording. It runs at scene end,
+ after every caster has been drawn, so the map and the picture are the same frame:
+ there is no motion to predict and nothing left to stutter. The post pass reads it.
+*/
+static void shadow_frame_end(void)
+{
+	static BOOL logged;
+	int c;
+
+	if (!g_shadow_enabled || !g_have_light || !g_cfg_enabled || !g_shadow_frame || !post_ready())
+		return;
+	if (!g_rec_used || g_rec_overflow)
+		return;
+	for (c = 0; c < SHADOW_CASCADES; c++) {
+		float m[16];
+
+		mat_mul(m, g_light_matrix[c], g_prev_inv_view);
+		memcpy(c ? g_shadow_receiver_near : g_shadow_receiver, m, sizeof m);
+	}
+	shadow_replay(g_rec, g_rec_used, g_rec_start_prog, g_rec_start_vao);
+	g_shadow_receiver_valid = TRUE;
+	/* Where the post pass reads them from. */
+	for (c = 0; c < SHADOW_CASCADES; c++) {
+		real_glActiveTexture(GL_TEXTURE0 + SHADOW_UNIT + c);
+		real_glBindTexture(GL_TEXTURE_2D, g_shadow_tex[c]);
+	}
+	real_glActiveTexture(g_active_unit);
+	if (!logged) {
+		logged = TRUE;
+		log_msg("shadows: the map is drawn at the end of the frame, from this frame's own draws");
+	}
 }
 
 HOOK(void, glUseProgram, (GLuint program))
@@ -4516,40 +4644,24 @@ void hooks_init(void)
 
 #ifndef _WIN32
 /*
- --- Linux: what the wgl hooks above do, called by preload.c's GLX hooks ---
+ --- Linux: what the wgl hooks above do, called by preload.c's GLX and EGL hooks ---
 
- The Linux game makes one legacy context with glXCreateContext and never asks for a version,
- so gl_major and gl_minor have nothing to change. The main context is the first one made
- current on a window, which preload.c also uses to pick the swaps that end a frame.
+ The game opens its display one of two ways: a legacy glXCreateContext context, or, when the
+ X server has no GLX, EGL. Either way it makes one context and never asks for a version, so
+ gl_major and gl_minor have nothing to change. The main context is the first one made current
+ on a window, which preload.c also uses to pick the swaps that end a frame; on the EGL path
+ the window is the one the EGL surface was made on.
 */
-void hooks_glx_context_created(HGLRC rc)
-{
-	log_msg("glXCreateContext -> %p", rc);
-}
-
-void hooks_glx_context_destroyed(HGLRC rc)
-{
-	log_msg("glXDestroyContext %p", rc);
-	if (rc == g_main_rc) {
-		g_main_rc = NULL;
-		g_fbo = 0;
-		g_aniso = 1.0f;
-		sky_context_lost();
-		post_context_lost();
-		ui_context_lost();
-	}
-}
-
-void hooks_glx_made_current(HDC dc, HGLRC rc)
+static void context_made_current(HDC dc, HGLRC rc, const char *call)
 {
 	typedef const char *(WINAPI *glGetString_t)(GLenum);
 	glGetString_t gs = (glGetString_t)GetProcAddress(g_real_gl, "glGetString");
 
-	log_msg("glXMakeCurrent %p on window 0x%lx", rc, dc);
+	log_msg("%s %p on window 0x%lx", call, rc, dc);
 	if (!g_main_rc) {
 		g_main_rc = rc;
 		if (g_cfg_gl_major > 0)
-			log_msg("legacy GLX context: the driver picks its version, gl_major and gl_minor aren't used");
+			log_msg("legacy GL context: the driver picks its version, gl_major and gl_minor aren't used");
 	}
 	if (gs) {
 		log_msg("  GL_VENDOR   %s", gs(GL_VENDOR));
@@ -4561,21 +4673,34 @@ void hooks_glx_made_current(HDC dc, HGLRC rc)
 		context_ready(dc);
 }
 
-void hooks_glx_swap(HDC dc)
+static void context_destroyed(HGLRC rc, const char *call)
 {
-	if (!g_saw_swap)
-		log_msg("glXSwapBuffers reached the library");
-	g_saw_swap = TRUE;
-	present(dc);
-	frame_boundary("glXSwapBuffers");
+	log_msg("%s %p", call, rc);
+	if (rc == g_main_rc) {
+		g_main_rc = NULL;
+		g_fbo = 0;
+		g_aniso = 1.0f;
+		sky_context_lost();
+		post_context_lost();
+		ui_context_lost();
+	}
 }
 
-/* What to hand the game for a glXGetProcAddress name, like the wglGetProcAddress hook. */
-void *hooks_glx_proc(const char *name, void *p)
+static void frame_swapped(HDC dc, const char *call)
+{
+	if (!g_saw_swap)
+		log_msg("%s reached the library", call);
+	g_saw_swap = TRUE;
+	present(dc);
+	frame_boundary(call);
+}
+
+/* What to hand the game for a get-proc-address name, like the wglGetProcAddress hook. */
+static void *proc_wrapped(const char *name, void *p, const char *call)
 {
 	size_t i;
 
-	log_msg("glXGetProcAddress %s -> %p", name, p);
+	log_msg("%s %s -> %p", call, name, p);
 	if (!p)
 		return NULL;
 	for (i = 0; i < sizeof g_dyn / sizeof g_dyn[0]; i++) {
@@ -4585,5 +4710,55 @@ void *hooks_glx_proc(const char *name, void *p)
 		}
 	}
 	return p;
+}
+
+void hooks_glx_context_created(HGLRC rc)
+{
+	log_msg("glXCreateContext -> %p", rc);
+}
+
+void hooks_egl_context_created(HGLRC rc)
+{
+	log_msg("eglCreateContext -> %p", rc);
+}
+
+void hooks_glx_context_destroyed(HGLRC rc)
+{
+	context_destroyed(rc, "glXDestroyContext");
+}
+
+void hooks_egl_context_destroyed(HGLRC rc)
+{
+	context_destroyed(rc, "eglDestroyContext");
+}
+
+void hooks_glx_made_current(HDC dc, HGLRC rc)
+{
+	context_made_current(dc, rc, "glXMakeCurrent");
+}
+
+void hooks_egl_made_current(HDC dc, HGLRC rc)
+{
+	context_made_current(dc, rc, "eglMakeCurrent");
+}
+
+void hooks_glx_swap(HDC dc)
+{
+	frame_swapped(dc, "glXSwapBuffers");
+}
+
+void hooks_egl_swap(HDC dc)
+{
+	frame_swapped(dc, "eglSwapBuffers");
+}
+
+void *hooks_glx_proc(const char *name, void *p)
+{
+	return proc_wrapped(name, p, "glXGetProcAddress");
+}
+
+void *hooks_egl_proc(const char *name, void *p)
+{
+	return proc_wrapped(name, p, "eglGetProcAddress");
 }
 #endif

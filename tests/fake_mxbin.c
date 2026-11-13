@@ -40,6 +40,37 @@ void glClearColor(float, float, float, float);
 void glClear(unsigned);
 void glDrawArrays(unsigned, int, int);
 
+/* EGL, declared here for the same reason as the GL calls. MXS_TEST_EGL=1 makes the stand-in open
+ its display the way the game does when the X server has no GLX: EGL, eglGetProcAddress and
+ eglSwapBuffers instead of the GLX calls. */
+typedef void *EGLDisplay;
+typedef void *EGLConfig;
+typedef void *EGLSurface;
+typedef void *EGLContext;
+typedef int EGLint;
+typedef unsigned EGLBoolean;
+#define EGL_NONE 0x3038
+#define EGL_RED_SIZE 0x3024
+#define EGL_GREEN_SIZE 0x3023
+#define EGL_BLUE_SIZE 0x3022
+#define EGL_DEPTH_SIZE 0x3025
+#define EGL_SURFACE_TYPE 0x3033
+#define EGL_WINDOW_BIT 0x0004
+#define EGL_RENDERABLE_TYPE 0x3040
+#define EGL_OPENGL_BIT 0x0008
+#define EGL_NATIVE_VISUAL_ID 0x302E
+#define EGL_OPENGL_API 0x30A2
+EGLDisplay eglGetDisplay(void *);
+EGLBoolean eglBindAPI(unsigned);
+EGLBoolean eglInitialize(EGLDisplay, EGLint *, EGLint *);
+EGLBoolean eglChooseConfig(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *);
+EGLBoolean eglGetConfigAttrib(EGLDisplay, EGLConfig, EGLint, EGLint *);
+EGLSurface eglCreateWindowSurface(EGLDisplay, EGLConfig, unsigned long, const EGLint *);
+EGLContext eglCreateContext(EGLDisplay, EGLConfig, EGLContext, const EGLint *);
+EGLBoolean eglMakeCurrent(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
+EGLBoolean eglSwapBuffers(EGLDisplay, EGLSurface);
+void *eglGetProcAddress(const char *);
+
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_FRAGMENT_SHADER 0x8B30
 #define GL_LINK_STATUS 0x8B82
@@ -137,11 +168,17 @@ int main(int argc, char **argv)
 	int attribs[] = {GLX_DOUBLEBUFFER, GLX_RGBA, GLX_RED_SIZE, 5, GLX_GREEN_SIZE, 6, GLX_BLUE_SIZE, 5,
 			 GLX_DEPTH_SIZE, 16, None};
 	const char *idfile = argc > 1 ? argv[1] : "/tmp/fake_mxbin.id";
+	int egl_mode = getenv("MXS_TEST_EGL") != NULL;
+	const char *gpa = egl_mode ? "eglGetProcAddress" : "glXGetProcAddress";
 	Display *d = XOpenDisplay(NULL);
 	XVisualInfo *vi;
 	XSetWindowAttributes a;
 	Window top, child;
-	GLXContext ctx;
+	GLXContext ctx = NULL;	/* only made without MXS_TEST_EGL, and only destroyed in that case */
+	EGLDisplay edpy = NULL;
+	EGLSurface esurf = NULL;
+	EGLContext ectx = NULL;
+	EGLConfig ecfg = NULL;
 	unsigned presses = 0, releases = 0, frames = 0, poll_clicks = 0, was_down = 0, escapes = 0;
 	int quit = 0;
 	FILE *f;
@@ -150,9 +187,31 @@ int main(int argc, char **argv)
 
 	if (!d)
 		return 2;
-	vi = glXChooseVisual(d, DefaultScreen(d), attribs);
-	if (!vi)
-		return 3;
+	if (egl_mode) {
+		EGLint major = 0, minor = 0, count = 0, visual = 0;
+		EGLint eattrs[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_RED_SIZE,
+				   8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_DEPTH_SIZE, 24, EGL_NONE};
+		XVisualInfo want;
+		int found = 0;
+
+		edpy = eglGetDisplay(NULL);
+		if (!edpy || !eglInitialize(edpy, &major, &minor))
+			return 5;
+		/* Without this EGL hands out an OpenGL ES context, as the game's eglBindAPI call avoids. */
+		if (!eglBindAPI(EGL_OPENGL_API))
+			return 8;
+		if (!eglChooseConfig(edpy, eattrs, &ecfg, 1, &count) || count < 1)
+			return 6;
+		eglGetConfigAttrib(edpy, ecfg, EGL_NATIVE_VISUAL_ID, &visual);
+		want.visualid = (VisualID)visual;
+		vi = XGetVisualInfo(d, VisualIDMask, &want, &found);
+		if (!vi || !found)
+			return 7;
+	} else {
+		vi = glXChooseVisual(d, DefaultScreen(d), attribs);
+		if (!vi)
+			return 3;
+	}
 	memset(&a, 0, sizeof a);
 	a.colormap = XCreateColormap(d, RootWindow(d, vi->screen), vi->visual, AllocNone);
 	a.event_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | StructureNotifyMask |
@@ -172,13 +231,22 @@ int main(int argc, char **argv)
 	 (probe: ReparentNotify at 0.084 s, glXMakeCurrent at 0.219 s). Give the test driver time to do the same. */
 	XFlush(d);
 	usleep(800000);
-	ctx = glXCreateContext(d, vi, NULL, True);
-	if (!ctx || !glXMakeCurrent(d, child, ctx))
-		return 4;
-	use_program = (void (*)(unsigned))glXGetProcAddress((const GLubyte *)"glUseProgram");
-	p_draw = (void *)glXGetProcAddress((const GLubyte *)"glDrawArrays");
-	printf("glXGetProcAddress(glUseProgram) %s, glXGetProcAddress(glDrawArrays) %s\n",
-	       use_program ? "found" : "missing", p_draw == (void *)glDrawArrays ? "is the hook" : "BYPASSES THE HOOK");
+	if (egl_mode) {
+		esurf = eglCreateWindowSurface(edpy, ecfg, (unsigned long)child, NULL);
+		ectx = eglCreateContext(edpy, ecfg, NULL, NULL);
+		if (!esurf || !ectx || !eglMakeCurrent(edpy, esurf, esurf, ectx))
+			return 4;
+		use_program = (void (*)(unsigned))eglGetProcAddress("glUseProgram");
+		p_draw = (void *)eglGetProcAddress("glDrawArrays");
+	} else {
+		ctx = glXCreateContext(d, vi, NULL, True);
+		if (!ctx || !glXMakeCurrent(d, child, ctx))
+			return 4;
+		use_program = (void (*)(unsigned))glXGetProcAddress((const GLubyte *)"glUseProgram");
+		p_draw = (void *)glXGetProcAddress((const GLubyte *)"glDrawArrays");
+	}
+	printf("%s(glUseProgram) %s, %s(glDrawArrays) %s\n", gpa, use_program ? "found" : "missing", gpa,
+	       p_draw == (void *)glDrawArrays ? "is the hook" : "BYPASSES THE HOOK");
 	if (argc > 2)
 		game_shaders(argv[2]);
 	fflush(stdout);
@@ -212,7 +280,10 @@ int main(int argc, char **argv)
 		glClearColor(0.2f, 0.3f, 0.4f, 1);
 		glClear(GL_COLOR_BUFFER_BIT);
 		glDrawArrays(GL_TRIANGLES, 0, 3);
-		glXSwapBuffers(d, child);
+		if (egl_mode)
+			eglSwapBuffers(edpy, esurf);
+		else
+			glXSwapBuffers(d, child);
 		frames++;
 		if (frames == 30) { /* tells the driver the game is drawing, so its input won't fall into startup */
 			char ready[1100];
@@ -225,8 +296,12 @@ int main(int argc, char **argv)
 	printf("game received %u button presses, %u releases, saw %u clicks by polling, ran %u frames\n", presses,
 	       releases, poll_clicks, frames);
 	printf("game received %u escape presses\n", escapes);
-	glXMakeCurrent(d, None, NULL);
-	glXDestroyContext(d, ctx);
+	if (egl_mode) {
+		eglMakeCurrent(edpy, NULL, NULL, NULL);
+	} else {
+		glXMakeCurrent(d, None, NULL);
+		glXDestroyContext(d, ctx);
+	}
 	XCloseDisplay(d);
 	return 0;
 }

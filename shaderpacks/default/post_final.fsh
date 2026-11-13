@@ -10,6 +10,7 @@ uniform float u_proj_a, u_proj_b, u_fx, u_fy;
 uniform float u_camera_height;	/* above the ground around the rider */
 uniform float u_fog_amount;	/* the fog setting in mxs-shaders.ini, 1 at 100 */
 uniform float u_sharpen, u_bloom_amount;	/* the settings, 1 at 100 */
+uniform float u_shadow_strength;	/* how dark a sun shadow goes, 1 at 100 */
 uniform vec3 u_up, u_sun, u_fog_color;	/* u_sun is where the sun really is, in view space */
 uniform vec3 u_light;		/* the light the scene is shaded with, the moon at night, in view space */
 uniform int u_sky_mask_on;	/* 0 until the skybox has been read */
@@ -244,13 +245,54 @@ void main()
 	vec3 ray = vec3(ndc.x / u_fx, ndc.y / u_fy, -1.0);
 	vec3 dir = normalize(to_world_dir(ray));
 	float dist = depth < 1.0 ? u_proj_b / (depth * 2.0 - 1.0 + u_proj_a) * length(ray) : 1e6;
-	float open = sky_open(dir);
+	float open = sky_open(dir), shade_on;
 
 	if (u_sharpen > 0.0)
 		c = sharpen(c);
-	c *= mix(1.0, occlusion.r, AO_STRENGTH);
-	/* Contact shadows only take away direct light, which is gone after sunset. */
-	c *= mix(1.0, occlusion.g, CONTACT_STRENGTH * clamp(dot(light_tint(), vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0));
+	/*
+	 Both of the depth pass's terms go with Shadow Strength, so 0 is the game with its own
+	 shadows off: nothing of the mod's shades the scene, and the track's baked shade (see
+	 u_baked_shadow) is what the ground has. AO goes with them because this is what it draws:
+	 the soft dark halo under a tyre and at the foot of anything close, fading out past 30 m,
+	 so it only shows up nearby. Left on at 0 it reads as a shadow the setting failed to remove.
+	*/
+	shade_on = step(0.0001, u_shadow_strength);
+	c *= mix(1.0, occlusion.r, AO_STRENGTH * shade_on);
+	/* Contact shadows take away direct light only, which is gone after sunset. */
+	c *= mix(1.0, occlusion.g, CONTACT_STRENGTH * shade_on *
+		 clamp(dot(light_tint(), vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0));
+	/*
+	 The sun's shadow comes from the map drawn at the end of this frame, from this
+	 frame's own draw calls, so it is never a frame behind the bike. The surface and its
+	 normal are rebuilt from the depth buffer, in view space: that is what the map's
+	 matrix (the same one the game's shaders used to get) takes. At night the light is
+	 the moon's, which the map is lit by too.
+
+	 Only the direct light goes: shade still has the sky's light, which at dawn is all
+	 there is. Scaling the whole colour turned every shadow into a black hole, where the
+	 game's shaders had only ever scaled their sun term, so shade keeps a floor of it.
+	 How dark a shadow goes is the shadow_strength setting, and not the surface's own facing,
+	 which an earlier version scaled by: this normal is flat across each triangle, because it
+	 is rebuilt from the depth buffer, so scaling by it drew those triangles across the jersey
+	 and the ground, and a surface turned away from the sun lost its shadow instead of
+	 darkening.
+	*/
+	if (depth < 1.0 && u_shadow_on != 0) {
+		vec3 vpos = ray * (u_proj_b / (depth * 2.0 - 1.0 + u_proj_a));
+		vec3 n = normalize(cross(dFdx(vpos), dFdy(vpos)));
+		float lost;
+
+		if (dot(n, vpos) > 0.0)
+			n = -n;	/* the lookup pushes along it, so it has to face the camera */
+		/*
+		 This surface is rebuilt from a 24-bit depth buffer, so it sits up to this many game
+		 units from the one that was drawn: one step of the buffer covers this much distance
+		 here, taken twice over. The lookup has to allow for it. Left out, ground in the far
+		 map counts as its own caster, faintly at 4096 and as full shade at 8192.
+		*/
+		lost = 2.0 * dist * dist / u_proj_b * (1.0 / 8388608.0);
+		c *= mix(1.0 - u_shadow_strength, 1.0, sun_shadow_depth(vpos, n, lost));
+	}
 	/* The atmosphere itself is already there: sprite.fsh drew it in the game's own sky. */
 	if (depth >= 1.0) {
 		c = weather_sky(c, dir, flash, slot, open);

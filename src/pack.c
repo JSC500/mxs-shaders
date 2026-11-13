@@ -38,8 +38,11 @@ static char *read_pack_file(const char *name)
 
 	swprintf_s(path, MAX_PATH, L"%s\\%S", g_pack_dir, name);
 	text = read_file(path);
-	if (text)
+	if (text) {
+		/* Says so, or a file left over from an older build looks like a shader bug. */
+		log_msg("pack: %s from the pack folder", name);
 		return text;
+	}
 	for (i = 0; embedded_pack[i].name; i++)
 		if (!strcmp(embedded_pack[i].name, name))
 			return _strdup(embedded_pack[i].text);
