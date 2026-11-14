@@ -2837,8 +2837,6 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_LOOK, "Saturation", L"saturation", g_cfg_saturation, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Contrast", L"contrast", g_cfg_contrast, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Split Toning", L"split_tone", g_cfg_split_tone, 0, 100, 5),
-	/* How dark a sun shadow goes: the share of the pixel full shade takes away, 0 is no shadow. */
-	SLIDER(UI_TAB_LOOK, "Shadow Strength", L"shadow_strength", g_cfg_shadow_strength, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Sharpen", L"sharpen", g_cfg_sharpen, 0, 200, 5),
 	SLIDER(UI_TAB_LOOK, "Texture Sharpness", L"texture_sharpness", g_cfg_texture_sharpness, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Bloom", L"bloom", g_cfg_bloom, 0, 200, 5),
@@ -2854,6 +2852,8 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_WEATHER, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
 	/* The sun's strength, 100 the pack's tuned sun: the old, brighter look is about 130. */
 	SLIDER(UI_TAB_WEATHER, "Sun Strength", L"sun_strength", g_cfg_sun_strength, 0, 400, 10),
+	/* How dark a sun shadow goes: the share of the pixel full shade takes away, 0 is no shadow. */
+	SLIDER(UI_TAB_WEATHER, "Shadow Strength", L"shadow_strength", g_cfg_shadow_strength, 0, 100, 5),
 
 	TOGGLE(UI_TAB_DISPLAY, "Hide Game HUD", L"hide_hud", g_cfg_hide_hud, FALSE),
 	TOGGLE(UI_TAB_DISPLAY, "Hide Cursor in Race", L"hide_cursor", g_cfg_hide_cursor, FALSE),
