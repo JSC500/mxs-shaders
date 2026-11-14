@@ -59,6 +59,11 @@ void hooks_glx_context_destroyed(HGLRC rc);
 void hooks_glx_made_current(HDC dc, HGLRC rc);
 void hooks_glx_swap(HDC dc);
 void *hooks_glx_proc(const char *name, void *p);
+void hooks_egl_context_created(HGLRC rc);
+void hooks_egl_context_destroyed(HGLRC rc);
+void hooks_egl_made_current(HDC dc, HGLRC rc);
+void hooks_egl_swap(HDC dc);
+void *hooks_egl_proc(const char *name, void *p);
 
 static int g_active;
 
@@ -93,6 +98,21 @@ static Window (*next_XCreateWindow)(Display *, Window, int, int, unsigned, unsig
 static int (*next_XChangeWindowAttributes)(Display *, Window, unsigned long, XSetWindowAttributes *);
 static Bool (*next_XQueryPointer)(Display *, Window, Window *, Window *, int *, int *, int *, int *, unsigned *);
 
+/* EGL, the game's other way of opening its display (when the X server has no GLX). */
+typedef void *EGLDisplay;
+typedef void *EGLConfig;
+typedef void *EGLSurface;
+typedef void *EGLContext;
+typedef unsigned EGLBoolean;
+typedef int EGLint;
+
+static void *(*next_eglGetProcAddress)(const char *);
+static EGLContext (*next_eglCreateContext)(EGLDisplay, EGLConfig, EGLContext, const EGLint *);
+static EGLBoolean (*next_eglDestroyContext)(EGLDisplay, EGLContext);
+static EGLSurface (*next_eglCreateWindowSurface)(EGLDisplay, EGLConfig, unsigned long, const EGLint *);
+static EGLBoolean (*next_eglMakeCurrent)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
+static EGLBoolean (*next_eglSwapBuffers)(EGLDisplay, EGLSurface);
+
 static void resolve_all(void)
 {
 #define X(name, params, args) NEXT(name);
@@ -112,6 +132,12 @@ static void resolve_all(void)
 	NEXT(XQueryPointer);
 	NEXT(XCreateWindow);
 	NEXT(XChangeWindowAttributes);
+	NEXT(eglGetProcAddress);
+	NEXT(eglCreateContext);
+	NEXT(eglDestroyContext);
+	NEXT(eglCreateWindowSurface);
+	NEXT(eglMakeCurrent);
+	NEXT(eglSwapBuffers);
 }
 
 /* --- start-up (replaces DllMain) --- */
@@ -142,8 +168,8 @@ __attribute__((constructor)) static void mxs_init(void)
 	e = getenv("XDG_SESSION_TYPE");
 	plat_log("session %s, DISPLAY=%s, data folder %s", e ? e : "(unset)",
 		 getenv("DISPLAY") ? getenv("DISPLAY") : "(unset)", plat_data_dir());
-	if (!next_glXSwapBuffers || !next_XNextEvent)
-		plat_log("failed: the game's libGL or libX11 functions weren't found, staying inactive");
+	if (!next_XNextEvent || (!next_glXSwapBuffers && !next_eglSwapBuffers))
+		plat_log("failed: the game's libGL, libEGL or libX11 functions weren't found, staying inactive");
 	else
 		g_active = 1;
 	if (g_active)
@@ -178,6 +204,11 @@ static GLXContext g_main_ctx;
 static Display *g_main_dpy;
 static GLXDrawable g_main_drawable;
 static int g_ready;
+
+/* The EGL path's window and the X connection the input layer reads it through (see the EGL
+ section at the end of this file). */
+static Display *g_egl_dpy;
+static Window g_egl_win;
 
 EXPORT GLXContext glXCreateContext(Display *d, XVisualInfo *vis, GLXContext share, Bool direct)
 {
@@ -230,7 +261,7 @@ EXPORT void glXSwapBuffers(Display *d, GLXDrawable w)
 	NEXT(glXSwapBuffers)(d, w);
 }
 
-static void *proc_for(const char *name, void *real)
+static void *proc_for(const char *name, void *real, void *(*wrap)(const char *, void *))
 {
 	size_t i;
 	void *wrapped;
@@ -242,25 +273,30 @@ static void *proc_for(const char *name, void *real)
 		if (!strcmp(name, g_static[i].name))
 			return real ? g_static[i].fn : NULL;
 	}
-	wrapped = real ? hooks_glx_proc(name, real) : NULL;
+	wrapped = real ? wrap(name, real) : NULL;
 	return wrapped ? wrapped : real;
 }
 
 EXPORT void *glXGetProcAddress(const unsigned char *name)
 {
-	return proc_for((const char *)name, NEXT(glXGetProcAddress)(name));
+	return proc_for((const char *)name, NEXT(glXGetProcAddress)(name), hooks_glx_proc);
 }
 
 EXPORT void *glXGetProcAddressARB(const unsigned char *name)
 {
-	return proc_for((const char *)name, NEXT(glXGetProcAddressARB)(name));
+	return proc_for((const char *)name, NEXT(glXGetProcAddressARB)(name), hooks_glx_proc);
 }
 
 /* --- X events: drop pointer events while the panel is open, notice resizes --- */
 
 static int game_display(Display *d)
 {
-	return g_active && d && d == g_main_dpy;
+	if (!g_active || !d)
+		return 0;
+	/* Under EGL no hook ever sees the game's own Display (eglCreateWindowSurface gives only the
+	 window), and the library only acts inside the game process, so every X connection is the
+	 game's. Without this the panel's input filtering silently does nothing on that path. */
+	return g_egl_win ? 1 : d == g_main_dpy;
 }
 
 EXPORT int XPending(Display *d)
@@ -345,4 +381,89 @@ EXPORT int XChangeWindowAttributes(Display *d, Window w, unsigned long mask, XSe
 	if (g_active && a && (mask & CWCursor))
 		input_note_cursor(w, a->cursor);
 	return r;
+}
+
+/* --- EGL: the other way the game opens its display ---
+ When the X server has no GLX extension the game falls back to EGL ("No GLX extension on X
+ server", then "Opening display via EGL at ..."). It then fetches every function past GL 1.1
+ with eglGetProcAddress and presents with eglSwapBuffers, so without these two hooks none of the
+ dynamic hooks is ever reached: the game still renders, but no shadows, no post and no panel.
+
+ eglCreateWindowSurface is where the game's X window shows up (g_egl_win, declared with the GLX
+ state above). The input layer needs a Display connection of its own, because no EGL call hands
+ one over. */
+
+static Display *egl_display(void)
+{
+	if (!g_egl_dpy)
+		g_egl_dpy = XOpenDisplay(NULL);
+	return g_egl_dpy;
+}
+
+EXPORT EGLSurface eglCreateWindowSurface(EGLDisplay d, EGLConfig c, unsigned long win, const EGLint *attrs)
+{
+	EGLSurface s;
+
+	if (!next_eglCreateWindowSurface)
+		return NULL;
+	s = NEXT(eglCreateWindowSurface)(d, c, win, attrs);
+	if (g_active && s) {
+		g_egl_win = (Window)win;
+		egl_display();
+	}
+	return s;
+}
+
+EXPORT EGLContext eglCreateContext(EGLDisplay d, EGLConfig c, EGLContext share, const EGLint *attrs)
+{
+	EGLContext ctx;
+
+	if (!next_eglCreateContext)
+		return NULL;
+	ctx = NEXT(eglCreateContext)(d, c, share, attrs);
+	if (g_active && ctx)
+		hooks_egl_context_created((HGLRC)ctx);
+	return ctx;
+}
+
+EXPORT EGLBoolean eglDestroyContext(EGLDisplay d, EGLContext ctx)
+{
+	if (!next_eglDestroyContext)
+		return 0;
+	if (g_active && ctx)
+		hooks_egl_context_destroyed((HGLRC)ctx);
+	return NEXT(eglDestroyContext)(d, ctx);
+}
+
+EXPORT void *eglGetProcAddress(const char *name)
+{
+	if (!next_eglGetProcAddress)
+		return NULL;
+	return proc_for(name, NEXT(eglGetProcAddress)(name), hooks_egl_proc);
+}
+
+EXPORT EGLBoolean eglMakeCurrent(EGLDisplay d, EGLSurface draw, EGLSurface read_surface, EGLContext ctx)
+{
+	EGLBoolean ok;
+
+	if (!next_eglMakeCurrent)
+		return 0;
+	ok = NEXT(eglMakeCurrent)(d, draw, read_surface, ctx);
+	/* A releasing call (no context, no surface) changes nothing. */
+	if (g_active && ok && ctx && draw && g_egl_win && egl_display()) {
+		plat_frame_begin(g_egl_dpy, g_egl_win);
+		hooks_egl_made_current((HDC)g_egl_win, ctx);
+	}
+	return ok;
+}
+
+EXPORT EGLBoolean eglSwapBuffers(EGLDisplay d, EGLSurface s)
+{
+	if (!next_eglSwapBuffers)
+		return 0;
+	if (g_active && s && g_egl_win && g_egl_dpy) {
+		plat_frame_begin(g_egl_dpy, g_egl_win);
+		hooks_egl_swap((HDC)g_egl_win);
+	}
+	return NEXT(eglSwapBuffers)(d, s);
 }

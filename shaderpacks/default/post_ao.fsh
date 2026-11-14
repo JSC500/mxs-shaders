@@ -16,6 +16,7 @@ const float RADIUS = 0.7;	/* meters */
 const float FADE_START = 30.0, FADE_END = 80.0;	/* meters */
 const float INTENSITY = 1.4;
 const float CONTACT_END = 40.0;
+const float CONTACT_MIN_FACING = 0.35, CONTACT_FULL_FACING = 0.6;	/* cos of the light off the normal */
 
 vec3 view_pos(vec2 uv)
 {
@@ -49,7 +50,7 @@ float contact_shadow(vec3 p, vec3 n)
 {
 	const int STEPS = 16;
 	float dist = -p.z, reach = 0.8 + dist * 0.01;
-	float thickness = 0.5 + dist * 0.02;
+	float thickness = 0.5 + dist * 0.02, facing;
 	float bias = 0.025 + dist * 0.005;	/* above the depth buffer's stairs on flat ground */
 	float occlusion = 0.0;
 	vec3 sun = normalize(u_sun);
@@ -57,6 +58,19 @@ float contact_shadow(vec3 p, vec3 n)
 	int i;
 
 	if (dist > CONTACT_END || u_night >= 1.0)
+		return 1.0;
+	/*
+	 A light close to parallel with the surface makes this march meaningless: the ray runs
+	 along the surface, so every step lands inside its own thickness window and the whole
+	 reach counts as an occluder. The result is a broad dark area whose boundary is where
+	 the reach ends - hard, stepped by the half resolution buffer, and fixed to the screen,
+	 so it slides with the camera and looks like the shading being culled before it leaves
+	 the view. It is not a night effect: it follows the game's light, and a track lit by low
+	 lights keeps that light at every Time of Day, because the clock only moves the mod's own
+	 sun. Close to grazing there is nothing for a 16 step march to prove, so leave it alone.
+	*/
+	facing = dot(n, normalize(u_sun));
+	if (facing < CONTACT_MIN_FACING)
 		return 1.0;
 
 	for (i = 1; i <= STEPS; i++) {
@@ -69,7 +83,8 @@ float contact_shadow(vec3 p, vec3 n)
 		if (d > bias && d < thickness)
 			occlusion = max(occlusion, 1.0 - t * t);
 	}
-	return 1.0 - occlusion * (1.0 - smoothstep(CONTACT_END * 0.6, CONTACT_END, dist)) * (1.0 - u_night);
+	return 1.0 - occlusion * smoothstep(CONTACT_MIN_FACING, CONTACT_FULL_FACING, facing) *
+		(1.0 - smoothstep(CONTACT_END * 0.6, CONTACT_END, dist)) * (1.0 - u_night);
 }
 
 void main()

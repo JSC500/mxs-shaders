@@ -50,7 +50,7 @@ These full-screen passes run in order after the world is drawn. To skip an effec
 | `post_exposure.fsh` | Brightness in red and focus distance in green, 1×1 pixel |
 | `post_sky.fsh` | The clear sky in every direction, 256×128, from `sky.glsl`. `sprite.fsh` draws it in the next frame's skybox |
 | `post_clouds.fsh` | Volumetric clouds for a view a little wider than the screen, at the Cloud Quality's size, blended with the last frame. Light in rgb, how much of the sky behind shows in alpha. `sprite.fsh` draws them in the next frame's skybox |
-| `post_final.fsh` | Combines occlusion, atmosphere and bloom, still in linear light |
+| `post_final.fsh` | Combines the sun shadow, occlusion, atmosphere and bloom, still in linear light |
 | `post_lens.fsh` | Motion blur, depth of field, tone mapping and grading |
 
 The HUD and particles are drawn after these passes, so they aren't affected.
@@ -62,9 +62,9 @@ These uniforms only need declaring to use them.
 | Uniform | Used in | Meaning |
 |---|---|---|
 | `u_shadow_pass` | terrain, model | Nonzero while drawing the shadow map, so only depth matters |
-| `u_shadow_map`, `u_shadow_near_map` | world shaders | The wide and sharp sun shadow maps |
-| `u_shadow_matrix`, `u_shadow_near_matrix` | world shaders | View space to each map |
-| `u_shadow_on` | world shaders | Nonzero when the maps are valid |
+| `u_shadow_map`, `u_shadow_near_map` | `post_final.fsh`, `post_shafts.fsh` | The wide and sharp sun shadow maps |
+| `u_shadow_matrix`, `u_shadow_near_matrix` | `post_final.fsh`, `post_shafts.fsh` | View space to each map, for this frame's own map |
+| `u_shadow_on` | `post_final.fsh`, `post_shafts.fsh`, and world shaders when post-processing is off | Nonzero when the maps are valid. With post-processing on, world shaders get 0: the mod applies the sun shadow in `post_final.fsh`, from a map drawn at the end of the frame, so it is the same frame. Without a post pass (`msaa` under 2) the maps go to the world shaders instead and this is 1 |
 | `u_hdr` | world shaders | Nonzero in a race, where post-processing finishes the image. Otherwise the shader must tone map itself |
 | `u_night` | world shaders, `post_ao.fsh`, `post_final.fsh`, `post_lens.fsh` | 0 by day, rising through twilight to 1 when the sun is 12 degrees down, from the Time of Day setting. For stars and the like: the shadow maps keep running at night, lit by the moon |
 | `u_direct_loss`, `u_ambient_loss` | world shaders, `post_final.fsh` | How much of the game's sun and sky light the Time of Day takes away, per colour. 0 leaves the game's light. `common.glsl`'s `sun_boost()`, `light_tint()` and `sky_light()` apply them, so a pack that uses those gets dusk and night for free |
@@ -72,16 +72,19 @@ These uniforms only need declaring to use them.
 | `u_cloud_cover` | world shaders, post passes | The Cloud Cover setting, 1 at 100. `common.glsl`'s `cloud_cover()` raises it to an overcast in rain and snow, and `cloud_density()` is the cloud field the cloud shadows and the volumetric clouds share |
 | `u_clouds`, `u_cloud_view`, `u_cloud_scale` | sprite | The last volumetric clouds, the view they were drawn from, and its scale, with z 0 when there are none. `sky.glsl`'s `clouds_at()` reads them by direction |
 | `u_sky_face_on`, `u_sky_face` | sprite | Set for each skybox face once the skybox has been read: the face's corners and texture span, so `sprite.fsh` can draw the atmosphere above the skyline |
+| `u_sun_strength`, `u_sun_height` | world shaders | The Sun Strength setting, 1 at 200, and the sun's world height, 0 at the horizon and negative at night. `common.glsl`'s `sun_boost()`, `sun_power()` and `sky_light()` apply them: 200 is the pack's tuned sun and the default 100 is half of it, and the sky's fill is trimmed as the sun climbs |
 | `u_parallax` | terrain | The `parallax` setting |
+| `u_baked_shadow` | terrain | 0 while the mod's own shadow is being drawn (a race, `shadows` on and Shadow Strength above 0), 1 while the track's baked shadow is the shadow. `mix(1.0, normal_map.g, u_baked_shadow)` keeps it or hides it |
 | `u_view_up` | model | World up in view space |
 | `u_sprite_mode` | sprite | 0 normal, 1 sky, 2 particle |
 | `u_sun_view`, `u_screen` | sprite | Sun direction and screen size |
 | `u_fog_amount`, `u_up`, `u_sun`, `u_camera_height` | `post_final.fsh` | The `fog` setting, world up, sun direction, camera height above the ground |
 | `u_bloom_amount` | `post_final.fsh` | The `bloom` setting, 1 at 100. At 0 the bloom passes don't run, so `u_bloom` isn't updated |
+| `u_shadow_strength` | `post_final.fsh` | The `shadow_strength` setting, 1 at 100: how much of a pixel's colour a sun shadow takes away. At 0 the depth pass's other terms, AO and contact shadows, are off too, so nothing of the mod's shades the scene |
 | `u_motion`, `u_blur_near`, `u_reproject` | `post_lens.fsh` | Blur per frame of movement, sharp distance, this frame's view space to last frame's screen |
 | `u_dof`, `u_saturation`, `u_contrast`, `u_split_tone` | `post_lens.fsh` | The settings, 1 at 100 |
 
-Post passes also get `u_color`, `u_depth`, `u_ao`, `u_bloom`, `u_src`, `u_exposure` and `u_shafts` as textures, `u_proj_a` and `u_proj_b` to turn depth into distance, and `u_fx` and `u_fy` from the projection, in the passes that use them. `common.glsl` has the shadow lookups and tone mapping, and `post_shafts.fsh` shows how they're used.
+Post passes also get `u_color`, `u_depth`, `u_ao`, `u_bloom`, `u_src`, `u_exposure` and `u_shafts` as textures, `u_proj_a` and `u_proj_b` to turn depth into distance, and `u_fx` and `u_fy` from the projection, in the passes that use them. `common.glsl` has the shadow lookups and tone mapping, `post_final.fsh` uses them for the sun shadow and `post_shafts.fsh` for the beams.
 
 World shaders should return early when `u_shadow_pass` is set, as the default pack does, because only depth matters in that pass.
 

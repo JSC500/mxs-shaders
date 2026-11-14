@@ -16,6 +16,7 @@ uniform vec3 u_diffuse;
 uniform vec3 u_specular_color;
 uniform float u_texscale;	/* set by the game for the vertex shader: texture per world unit */
 uniform int u_parallax;		/* the parallax setting in mxs-shaders.ini, as a percentage */
+uniform float u_baked_shadow;	/* how much of the track's baked shadow to keep, 1 keeps it all */
 
 out vec4 f_fragcolor;
 
@@ -124,7 +125,14 @@ void main()
 
 	/* Green holds a terrain shading term, the normal's y is rebuilt from x and z. */
 	nmap = textureGrad(u_nmap, uv, dFdx(interp_texcoord), dFdy(interp_texcoord));
-	len = nmap.y;
+	/*
+	 Green holds the shadow the track baked into its normal maps, and the game multiplies
+	 sunlight by it. It is a second shadow of the same sun, fixed to the track's own light,
+	 and unscaled it outlived Shadow Strength at 0: its hard edges cut across the ground and
+	 stayed while the mod's shadow faded out. The mod's own map replaces it while shadows are
+	 on; with them off the track keeps its baked shade.
+	*/
+	len = mix(1.0, nmap.y, u_baked_shadow);
 	n = nmap.rgb * 2.0 - 1.0;
 	n.y = sqrt(max(1.0 - n.z * n.z - n.x * n.x, 0.0));
 	n = normalize(interp_modelview * tilt_to_ground(n));
@@ -150,7 +158,7 @@ void main()
 	s = textureGrad(u_smap, uv, dFdx(interp_texcoord), dFdy(interp_texcoord));
 	power = s.g * 128.0 + 0.125;
 	if (ndl > 0.0)
-		lit += to_linear(u_specular_color) * light_tint() * s.r * len * ndl * (1.0 - snow) *
+		lit += to_linear(u_specular_color) * sun_power() * s.r * len * ndl * (1.0 - snow) *
 		       specular(n, interp_viewer, light, power) * fresnel(n, interp_viewer, 0.04) * 4.0;
 
 	/* Water mirrors the sky, most at a glancing look, and the sun as a sharp glint. */
@@ -158,7 +166,7 @@ void main()
 		float f = fresnel(up, interp_viewer, 0.02) * water;
 
 		lit = mix(lit, sky_reflection(u_fog_color), f);
-		lit += to_linear(u_diffuse) * light_tint() * ndl * specular(up, interp_viewer, light, PUDDLE_SHINE) * f;
+		lit += to_linear(u_diffuse) * sun_power() * ndl * specular(up, interp_viewer, light, PUDDLE_SHINE) * f;
 	}
 
 	f_fragcolor = vec4(finish_color(lit, u_fog_color, u_fog_density), u_ambient.a);
