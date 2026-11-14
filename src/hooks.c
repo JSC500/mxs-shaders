@@ -745,6 +745,7 @@ static BOOL v_normalize(float *v)
 */
 #define CLOCK_TRACK 0
 #define CLOCK_STEPS 96
+#define CLOCK_DEFAULT 53	/* 13:00 */
 #define LATITUDE 45.0f
 #define DECLINATION 15.0f
 #define MOON_TAKES_OVER -3.0f	/* the sun's height when the light becomes the moon's */
@@ -3864,27 +3865,30 @@ static int clock_from_old_settings(void)
 /* Everything hot reload can pick up without rebuilding GL objects. */
 static void load_live_settings(void)
 {
-	g_cfg_clock = min(pack_int(L"clock", clock_from_old_settings()), CLOCK_STEPS);
-	g_cfg_fog = pack_int(L"fog", 10);
-	g_cfg_parallax = pack_int(L"parallax", 200);
-	g_cfg_motion_blur = pack_int(L"motion_blur", 10);
-	g_cfg_dof = pack_int(L"dof", 15);
-	g_cfg_saturation = pack_int(L"saturation", 110);
-	g_cfg_contrast = pack_int(L"contrast", 20);
-	g_cfg_split_tone = pack_int(L"split_tone", 20);
-	g_cfg_shadow_strength = min(max(pack_int(L"shadow_strength", 55), 0), 100);
-	g_cfg_sharpen = pack_int(L"sharpen", 30);
-	g_cfg_texture_sharpness = pack_int(L"texture_sharpness", 0);
-	g_cfg_bloom = pack_int(L"bloom", 100);
+	int old_clock = clock_from_old_settings();
+
+	/* 13:00 unless an old Day to Night or Sun Height setting says otherwise. */
+	g_cfg_clock = min(pack_int(L"clock", old_clock != CLOCK_TRACK ? old_clock : CLOCK_DEFAULT), CLOCK_STEPS);
+	g_cfg_fog = pack_int(L"fog", 5);
+	g_cfg_parallax = pack_int(L"parallax", 100);
+	g_cfg_motion_blur = pack_int(L"motion_blur", 5);
+	g_cfg_dof = pack_int(L"dof", 5);
+	g_cfg_saturation = pack_int(L"saturation", 100);
+	g_cfg_contrast = pack_int(L"contrast", 25);
+	g_cfg_split_tone = pack_int(L"split_tone", 25);
+	g_cfg_shadow_strength = min(max(pack_int(L"shadow_strength", 50), 0), 100);
+	g_cfg_sharpen = pack_int(L"sharpen", 40);
+	g_cfg_texture_sharpness = pack_int(L"texture_sharpness", 5);
+	g_cfg_bloom = pack_int(L"bloom", 50);
 	g_cfg_lens_flare = pack_int(L"lens_flare", 50);
 	g_cfg_sun_turn = pack_int(L"sun_turn", 0);
 	/* The scale is doubled: 200 is the tuned sun, so 100, the default, is half of it. */
 	g_cfg_sun_strength = min(max(pack_int(L"sun_strength", 100), 0), 400);
 	g_cfg_goggles = ini_int(L"goggles", 0);
 	g_cfg_weather = min(max(ini_int(L"weather", WEATHER_CLEAR), WEATHER_CLEAR), WEATHER_SNOW);
-	g_cfg_weather_amount = pack_int(L"weather_amount", 60);
+	g_cfg_weather_amount = pack_int(L"weather_amount", 50);
 	/* Cloudy is Cloud Cover now: as much cloud as Cloudy gave, and no rain. */
-	g_cfg_cloud_cover = min(pack_int(L"cloud_cover", g_cfg_weather == WEATHER_CLOUDY ? 25 + g_cfg_weather_amount * 45 / 100 : 20), 100);
+	g_cfg_cloud_cover = min(pack_int(L"cloud_cover", g_cfg_weather == WEATHER_CLOUDY ? 25 + g_cfg_weather_amount * 45 / 100 : 25), 100);
 	if (g_cfg_weather == WEATHER_CLOUDY) {
 		wchar_t path[MAX_PATH];
 
@@ -4584,7 +4588,7 @@ static void load_config(void)
 	g_cfg_gl_debug = GetPrivateProfileIntW(L"mxs-shaders", L"gl_debug", g_cfg_debug, path);
 	g_cfg_sky_mask_view = GetPrivateProfileIntW(L"mxs-shaders", L"sky_mask_view", 0, path);
 	g_cfg_shadows = GetPrivateProfileIntW(L"mxs-shaders", L"shadows", 1, path);
-	g_cfg_shadow_size = ini_int(L"shadow_size", 8192);
+	g_cfg_shadow_size = ini_int(L"shadow_size", 2048);
 	g_cfg_post = GetPrivateProfileIntW(L"mxs-shaders", L"post", 1, path);
 	g_cfg_borderless = GetPrivateProfileIntW(L"mxs-shaders", L"borderless", -1, path);
 
