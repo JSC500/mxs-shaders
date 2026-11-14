@@ -1420,13 +1420,15 @@ static GLint uni_set(GLint number, int kind, int count, int transpose, GLint val
 }
 
 /*
- In first person the game swaps the rider for a mesh with the hidden parts cut
- out, which would leave only the arms in the shadow. The game keeps both meshes,
- so the fullest one known for each skinned draw is remembered and used in the
- shadow pass only. It shares the bones of its trimmed version, so it follows the
- same pose.
+ In first person the game swaps the rider for meshes with the hidden parts cut
+ out, which would leave only the arms in the shadow. The game keeps both sets, so
+ the full one is remembered and drawn in the trimmed one's place in the shadow
+ pass only. The sets share their bones, so it follows the same pose. They don't
+ match draw for draw, some gear has fewer meshes in first person, so the full set
+ is kept and drawn whole.
 */
 #define MAX_FULL_MESHES 64
+#define FULL_SEARCH 64		/* how many VAOs before its trimmed set a full set can start */
 
 typedef struct {
 	GLuint vao;
@@ -1436,43 +1438,44 @@ typedef struct {
 } full_mesh;
 
 static full_mesh g_full[MAX_FULL_MESHES];
+static int g_full_n;
+static long long g_full_total;		/* indices in the full set */
+static GLuint g_trimmed_vao;		/* where the full set's trimmed version starts, once known */
 static size_t g_mesh_bytes[MAX_IDS];	/* index data of each VAO, drawn or not */
 
-static int full_mesh_slot(GLsizei count, GLenum type, const void *indices)
+/* The rider's draws are numbered from 1 as they come. */
+static int full_mesh_slot(void)
 {
 	int i = g_skinned_index++;
-	full_mesh *f;
 
-	if (i >= MAX_FULL_MESHES)
-		return 0;
-	f = &g_full[i];
-	if (count > f->count) {
-		log_msg("full mesh %d: vao %u, %d indices (was vao %u, %d)", i, g_cur_vao, count, f->vao, f->count);
-		f->vao = g_cur_vao;
-		f->count = count;
-		f->type = type;
-		f->indices = indices;
-	}
-	return i + 1;
+	return i < MAX_FULL_MESHES ? i + 1 : 0;
 }
 
 /*
- First person also skips rigid parts of the bike and rider: the frame, the rear
- wheel and the helmet. They aren't skinned, so nothing says where they are in that
- view. In chase view they are the draws right before and after the rider, and each
- is stored relative to every bone. The bone a group moves with is the one that
- relation varies least for, and that bone's live pose then places it in the shadow
- pass. The position is an average, so a suspended part sits at its usual height
- and not wherever the last chase view frame caught it.
+ First person also skips rigid parts: the swingarm, the rear wheel and the helmet.
+ They aren't skinned, so nothing says where they are in that view. In chase view
+ they are the draws right before and after the rider, in groups that share a
+ modelview. Each group is stored relative to every other group and every bone, and
+ in the shadow pass a hidden group follows whichever of those it moved least
+ against that is still drawn: the helmet a bone, the swingarm and rear wheel the
+ bike's frame, which first person keeps. No rider bone is fixed to the bike, so
+ against the bones those two sat up to 7 game units off, and against the frame
+ under 1. The stored relation is the one seen closest to the average, so a
+ suspended part sits at its usual height and not wherever chase view last caught it.
 */
-#define RIGID_MAX_PARTS 64
-#define RIGID_MAX_GROUPS 8
+#define RIGID_MAX_GROUPS 12
+#define RIGID_GROUP_DRAWS 32
 #define POSE_MAX_BONES 32
+#define RIGID_ANCHORS (RIGID_MAX_GROUPS + POSE_MAX_BONES)	/* groups first, then bones */
 #define RIGID_RADIUS 6.0f	/* game units from the nearest bone, further is unrelated scenery */
-#define RIGID_BEFORE 48		/* draws kept from before the rider */
-#define RIGID_AFTER 16
-#define RIGID_VAO_GAP 6		/* a bike's parts are close together in the upload order */
-#define RIGID_AVERAGE_FRAMES 3000	/* how far back a part's average position reaches */
+#define RIGID_HELMET_RADIUS 2.5f	/* after the rider come the next bike and the start gate, so this is tighter */
+#define RIGID_BEFORE 16		/* groups kept from before the rider */
+#define RIGID_AFTER 4
+#define RIGID_BIKE_GROUPS 6	/* frame, two fork halves, swingarm and two wheels, on every bike seen */
+#define RIGID_AVERAGE_FRAMES 3000	/* how far back a group's average relation reaches */
+#define RIGID_MIN_SAMPLES 30	/* frames before a relation is trusted */
+#define RIGID_BIAS 0.05f	/* game units a frame a bike part must gain to follow anything but the frame, or the helmet anything but a bone */
+#define RIGID_MAX_DRIFT 1.0f	/* a group that strays more than this from every anchor isn't part of the bike or rider */
 
 typedef struct {
 	GLuint vao;
@@ -1480,31 +1483,38 @@ typedef struct {
 	GLenum type;
 	const void *indices;
 	float ambient[4];
-	int group;
-	float relative[POSE_MAX_BONES][16];
-} rigid_part;
-
-typedef struct {
-	GLuint vao;
-	GLsizei count;
-	GLenum type;
-	const void *indices;
-	float ambient[4], mv[16];
 } rigid_draw;
 
-static rigid_part g_rigid[RIGID_MAX_PARTS];
-static int g_rigid_parts, g_rigid_frames;	/* frames of the relation being watched */
-static float g_rigid_score[RIGID_MAX_GROUPS][POSE_MAX_BONES];
-static int g_rigid_bone[RIGID_MAX_GROUPS];
-static rigid_draw g_rigid_before[RIGID_BEFORE], g_rigid_after[RIGID_AFTER];
+/* One modelview and the draws that used it, as seen this frame. */
+typedef struct {
+	int n;		/* past RIGID_GROUP_DRAWS it's scenery, not a part */
+	rigid_draw draw[RIGID_GROUP_DRAWS];
+	float mv[16];
+} rigid_seen;
+
+typedef struct {
+	float n, score;		/* frames watched, and how far it strayed from the average over them */
+	float mean[16], best[16];
+} rigid_relation;
+
+typedef struct {
+	int n, anchor;
+	int after;	/* drawn after the rider: the helmet. Before them it's the bike */
+	rigid_draw draw[RIGID_GROUP_DRAWS];
+	rigid_relation to[RIGID_ANCHORS];
+	BOOL hidden;
+	float placed[16];
+} rigid_group;
+
+static rigid_group g_rigid[RIGID_MAX_GROUPS];
+static int g_rigid_groups, g_rigid_frames;	/* frames learnt from since the groups were loaded or forgotten */
+static rigid_seen g_rigid_before[RIGID_BEFORE], g_rigid_after[RIGID_AFTER], *g_rigid_open;
 static int g_rigid_before_n, g_rigid_after_n;
 static BOOL g_rider_seen, g_frame_trimmed, g_rigid_needed, g_view_settled;
 static unsigned g_vao_frame[MAX_IDS];	/* when each VAO was last drawn as a rigid model */
 
 static float g_pose_mv[16], g_pose_r[POSE_MAX_BONES][9], g_pose_t[POSE_MAX_BONES][3], g_pose_c[POSE_MAX_BONES][3];
 static int g_pose_bones;
-static float g_replay_pose[POSE_MAX_BONES][16];
-static int g_replay_bones;
 static uni_entry *prog_uniform(GLuint prog, const char *name)
 {
 	size_t n = strlen(name);
@@ -1559,7 +1569,7 @@ static void rigid_draw_seen(GLsizei count, GLenum type, const void *indices)
 {
 	static GLuint prog;
 	static uni_entry *mv, *ambient;
-	rigid_draw *d;
+	rigid_seen *s = g_rigid_open;
 
 	if (prog != g_model_prog) {
 		prog = g_model_prog;
@@ -1570,23 +1580,33 @@ static void rigid_draw_seen(GLsizei count, GLenum type, const void *indices)
 		g_vao_frame[g_cur_vao] = g_frame;
 	if (!mv || !mv->data)
 		return;
-	if (!g_rider_seen)
-		d = &g_rigid_before[g_rigid_before_n++ % RIGID_BEFORE];
-	else if (g_rigid_after_n < RIGID_AFTER)
-		d = &g_rigid_after[g_rigid_after_n++];
-	else
-		return;
-	d->vao = g_cur_vao;
-	d->count = count;
-	d->type = type;
-	d->indices = indices;
-	memcpy(d->mv, mv->data, sizeof d->mv);
-	if (ambient && ambient->data)
-		memcpy(d->ambient, ambient->data, sizeof d->ambient);
+	if (!s || memcmp(s->mv, mv->data, sizeof s->mv)) {
+		if (!g_rider_seen)
+			s = &g_rigid_before[g_rigid_before_n++ % RIGID_BEFORE];
+		else if (g_rigid_after_n < RIGID_AFTER)
+			s = &g_rigid_after[g_rigid_after_n++];
+		else
+			return;
+		s->n = 0;
+		memcpy(s->mv, mv->data, sizeof s->mv);
+		g_rigid_open = s;
+	}
+	if (s->n < RIGID_GROUP_DRAWS) {
+		rigid_draw *d = &s->draw[s->n];
+
+		d->vao = g_cur_vao;
+		d->count = count;
+		d->type = type;
+		d->indices = indices;
+		memset(d->ambient, 0, sizeof d->ambient);
+		if (ambient && ambient->data)
+			memcpy(d->ambient, ambient->data, sizeof d->ambient);
+	}
+	s->n++;
 }
 
 /* The bones hold the rider's place, so the modelview alone says nothing about it. */
-static BOOL rigid_is_near(const float *mv)
+static BOOL rigid_is_near(const float *mv, float radius)
 {
 	float nearest = 1e30f, d[3];
 	int b, i;
@@ -1598,132 +1618,297 @@ static BOOL rigid_is_near(const float *mv)
 			d[i] = mv[12 + i] - (g_pose_mv[i] * t[0] + g_pose_mv[4 + i] * t[1] + g_pose_mv[8 + i] * t[2] + g_pose_mv[12 + i]);
 		nearest = min(nearest, v_dot(d, d));
 	}
-	return nearest <= RIGID_RADIUS * RIGID_RADIUS;
+	return nearest <= radius * radius;
 }
 
-/* Called at the end of a chase view frame with everything drawn around the rider. */
-static void rigid_update(void)
+/* A part's modelview may carry a scale, which mat_inv_rigid would get wrong. */
+static void mat_inv_affine(float *o, const float *m)
 {
-	static const rigid_draw *list[RIGID_MAX_PARTS];
-	float to_bone[POSE_MAX_BONES][16];
-	int have = min(g_rigid_before_n, RIGID_BEFORE);
-	int n = 0, group = -1, was = g_rigid_parts, i, b;
+	float a = m[0], b = m[4], c = m[8], d = m[1], e = m[5], f = m[9], g = m[2], h = m[6], i = m[10];
+	float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+	float s = det != 0.0f ? 1.0f / det : 0.0f;
+	int k;
 
-	/* Back from the rider through the bike, stopping at the first thing that isn't part of it. */
-	for (i = 0; i < have && n < RIGID_MAX_PARTS - RIGID_AFTER; i++) {
-		const rigid_draw *d = &g_rigid_before[(g_rigid_before_n - 1 - i) % RIGID_BEFORE];
+	o[0] = (e * i - f * h) * s; o[4] = (c * h - b * i) * s; o[8] = (b * f - c * e) * s;
+	o[1] = (f * g - d * i) * s; o[5] = (a * i - c * g) * s; o[9] = (c * d - a * f) * s;
+	o[2] = (d * h - e * g) * s; o[6] = (b * g - a * h) * s; o[10] = (a * e - b * d) * s;
+	for (k = 0; k < 3; k++)
+		o[12 + k] = -(o[k] * m[12] + o[4 + k] * m[13] + o[8 + k] * m[14]);
+	o[3] = o[7] = o[11] = 0.0f;
+	o[15] = 1.0f;
+}
 
-		if (!rigid_is_near(d->mv))
-			break;
-		if (n && (d->vao >= list[n - 1]->vao || list[n - 1]->vao - d->vao > RIGID_VAO_GAP))
-			break;
-		list[n++] = d;
+static int rigid_group_find(const rigid_seen *s)
+{
+	int i;
+
+	for (i = 0; i < g_rigid_groups; i++)
+		if (g_rigid[i].n == s->n && g_rigid[i].draw[0].vao == s->draw[0].vao && g_rigid[i].draw[0].count == s->draw[0].count)
+			return i;
+	return -1;
+}
+
+/* How far a relation is from the average: where the part sits, and for the closest sample also how it's turned. */
+static float rigid_apart(const float *rel, const float *mean, BOOL turn)
+{
+	float d = 0.0f;
+	int c;
+
+	for (c = 12; c < 15; c++)
+		d += (float)fabs(rel[c] - mean[c]);
+	for (c = 0; turn && c < 11; c++)
+		d += (float)fabs(rel[c] - mean[c]);
+	return d;
+}
+
+static void rigid_relation_add(rigid_relation *r, const float *rel)
+{
+	float weight = 1.0f / min(r->n + 1.0f, (float)RIGID_AVERAGE_FRAMES);
+	int c;
+
+	if (r->n > 0.0f)
+		r->score += rigid_apart(rel, r->mean, FALSE);
+	for (c = 0; c < 16; c++)
+		r->mean[c] = r->n > 0.0f ? r->mean[c] + (rel[c] - r->mean[c]) * weight : rel[c];
+	/* A wheel spins, so its average isn't a rotation. One real frame is kept, the most ordinary one. */
+	if (r->n == 0.0f || rigid_apart(rel, r->mean, TRUE) < rigid_apart(r->best, r->mean, TRUE))
+		memcpy(r->best, rel, sizeof r->best);
+	r->n += 1.0f;
+}
+
+/* This frame's pose and the groups it drew, as anchors. Returns which groups were among them. */
+static void rigid_anchors(float anchor[RIGID_ANCHORS][16], BOOL *have, const rigid_seen **seen, const int *index, int n)
+{
+	int i, b;
+
+	memset(have, 0, RIGID_ANCHORS * sizeof *have);
+	for (i = 0; i < n; i++) {
+		if (index[i] < 0)
+			continue;
+		memcpy(anchor[index[i]], seen[i]->mv, sizeof anchor[0]);
+		have[index[i]] = TRUE;
 	}
-	for (i = 0; i < n / 2; i++) {
-		const rigid_draw *t = list[i];
-
-		list[i] = list[n - 1 - i];
-		list[n - 1 - i] = t;
-	}
-	for (i = 0; i < g_rigid_after_n && rigid_is_near(g_rigid_after[i].mv); i++)
-		list[n++] = &g_rigid_after[i];
-
-	/* A stray draw near the rider must not replace what a full chase view taught. */
-	if (n < g_rigid_parts)
-		return;
-
 	for (b = 0; b < g_pose_bones; b++) {
-		float bone[16], world[16];
+		float bone[16];
 
 		bone_matrix(bone, b);
-		mat_mul(world, g_pose_mv, bone);
-		mat_inv_rigid(to_bone[b], world);
+		mat_mul(anchor[RIGID_MAX_GROUPS + b], g_pose_mv, bone);
+		have[RIGID_MAX_GROUPS + b] = TRUE;
 	}
-
-	g_rigid_parts = 0;
-	for (i = 0; i < n; i++) {
-		const rigid_draw *d = list[i];
-		rigid_part *p = &g_rigid[i];
-		BOOL seen_before = p->vao == d->vao && p->count == d->count;
-		BOOL first = !i || d->mv[12] != list[i - 1]->mv[12] || d->mv[13] != list[i - 1]->mv[13] ||
-			     d->mv[14] != list[i - 1]->mv[14];
-
-		if (first && group + 1 == RIGID_MAX_GROUPS)
-			break;
-		if (first && !seen_before)
-			memset(g_rigid_score[group + 1], 0, sizeof g_rigid_score[0]);
-		group += first;
-
-		for (b = 0; b < g_pose_bones; b++) {
-			float rel[16];
-
-			mat_mul(rel, to_bone[b], d->mv);
-
-			/* A group's bone stays close to the average relation, others wander. A saved part has no average yet. */
-			if (first && seen_before && g_rigid_frames) {
-				float drift = 0.0f;
-				int c;
-
-				for (c = 12; c < 15; c++)
-					drift += (float)fabs(rel[c] - p->relative[b][c]);
-				g_rigid_score[group][b] += drift + (float)sqrt(rel[12] * rel[12] + rel[13] * rel[13] + rel[14] * rel[14]) * 0.0005f;
-			}
-			if (seen_before) {
-				float weight = 1.0f / min(g_rigid_frames + 1, RIGID_AVERAGE_FRAMES);
-				int c;
-
-				for (c = 12; c < 15; c++)
-					rel[c] = p->relative[b][c] + (rel[c] - p->relative[b][c]) * weight;
-			}
-			memcpy(p->relative[b], rel, sizeof rel);
-		}
-		p->vao = d->vao;
-		p->count = d->count;
-		p->type = d->type;
-		p->indices = d->indices;
-		p->group = group;
-		memcpy(p->ambient, d->ambient, sizeof p->ambient);
-		g_rigid_parts++;
-	}
-	g_rigid_frames++;
-	if (g_rigid_parts != was)
-		log_msg("rigid parts: %d in %d groups", g_rigid_parts, group + 1);
 }
 
 /*
- Chase view draws the helmet right after the rider and first person doesn't. Trimmed
- meshes alone can't say which view this is, not all gear has them.
+ Back from the rider through the bike, stopping at the first thing that isn't part of it:
+ a bike's parts are uploaded in the order they're drawn. How far apart they are in that
+ order differs by bike, and a limit on it cut the frame off some of them. The frame comes
+ out last, in either view.
 */
-static BOOL rigid_chase_view(void)
+static int rigid_bike_walk(const rigid_seen **list)
 {
-	return g_rider_seen && !g_frame_trimmed && g_pose_bones > 0 && g_rigid_after_n > 0 &&
-	       rigid_is_near(g_rigid_after[0].mv);
+	int ring = min(g_rigid_before_n, RIGID_BEFORE), n = 0, i;
+	GLuint next = 0;
+
+	for (i = 0; i < ring && n < RIGID_BIKE_GROUPS; i++) {
+		const rigid_seen *s = &g_rigid_before[(g_rigid_before_n - 1 - i) % RIGID_BEFORE];
+		GLuint lo = s->draw[0].vao, hi = lo;
+		int d;
+
+		if (s->n > RIGID_GROUP_DRAWS || !rigid_is_near(s->mv, RIGID_RADIUS))
+			break;
+		for (d = 1; d < s->n; d++) {
+			lo = min(lo, s->draw[d].vao);
+			hi = max(hi, s->draw[d].vao);
+		}
+		if (n && hi >= next)
+			break;
+		next = lo;
+		list[n++] = s;
+	}
+	return n;
 }
 
-static void rigid_pick_bones(void)
+/* The same rider can sit on another bike, so what's saved is kept per bike too: by its frame's meshes. */
+static unsigned long long rigid_bike_sig(void)
 {
-	int g, b;
+	const rigid_seen *list[RIGID_MAX_GROUPS];
+	int n = rigid_bike_walk(list), d;
+	unsigned long long sig = 0;
 
-	for (g = 0; g < RIGID_MAX_GROUPS; g++) {
-		g_rigid_bone[g] = 0;
-		for (b = 1; b < g_pose_bones; b++)
-			if (g_rigid_score[g][b] < g_rigid_score[g][g_rigid_bone[g]])
-				g_rigid_bone[g] = b;
+	for (d = 0; n && d < list[n - 1]->n; d++)
+		sig = sig * 1000003 + list[n - 1]->draw[d].count;
+	return sig;
+}
+
+static BOOL rigid_drawn_lately(const rigid_group *g)
+{
+	GLuint vao = g->draw[0].vao;
+
+	return vao < MAX_IDS && g_vao_frame[vao] && g_frame - g_vao_frame[vao] <= 2;
+}
+
+/* Called at the end of a frame that drew the full rider, with everything drawn around them. */
+static void rigid_update(void)
+{
+	static float anchor[RIGID_ANCHORS][16], from[RIGID_ANCHORS][16];
+	const rigid_seen *list[RIGID_MAX_GROUPS];
+	BOOL have[RIGID_ANCHORS], is_new = FALSE;
+	int index[RIGID_MAX_GROUPS];
+	int ring = min(g_rigid_before_n, RIGID_BEFORE);
+	int n = rigid_bike_walk(list), bike = n, was = g_rigid_groups, i, a;
+
+	for (i = 0; i < g_rigid_after_n && n < RIGID_MAX_GROUPS; i++) {
+		const rigid_seen *s = &g_rigid_after[i];
+
+		if (s->n > RIGID_GROUP_DRAWS || !rigid_is_near(s->mv, RIGID_HELMET_RADIUS))
+			break;
+		list[n++] = s;
+	}
+
+	/*
+	 A part that's new while a known one has gone means another bike or helmet: the old one's
+	 meshes stay loaded, and its parts were drawn as a second bike in the shadow.
+	*/
+	for (i = 0; i < n; i++)
+		is_new |= rigid_group_find(list[i]) < 0;
+	for (i = 0; is_new && i < g_rigid_groups; i++) {
+		for (a = 0; a < n && rigid_group_find(list[a]) != i; a++)
+			;
+		if (a == n && !rigid_drawn_lately(&g_rigid[i])) {
+			log_msg("rigid parts: another bike or helmet, the %d groups known are dropped", g_rigid_groups);
+			g_rigid_groups = g_rigid_frames = was = 0;
+		}
+	}
+
+	for (i = 0; i < n; i++) {
+		index[i] = rigid_group_find(list[i]);
+		if (index[i] < 0 && g_rigid_groups < RIGID_MAX_GROUPS) {
+			rigid_group *g = &g_rigid[g_rigid_groups];
+
+			memset(g, 0, sizeof *g);
+			g->n = list[i]->n;
+			g->anchor = -1;
+			g->after = i >= bike;
+			memcpy(g->draw, list[i]->draw, sizeof g->draw);
+			index[i] = g_rigid_groups++;
+		}
+	}
+	rigid_anchors(anchor, have, list, index, n);
+	for (a = 0; a < RIGID_ANCHORS; a++)
+		if (have[a])
+			mat_inv_affine(from[a], anchor[a]);
+
+	for (i = 0; i < n; i++) {
+		if (index[i] < 0)
+			continue;
+		for (a = 0; a < RIGID_ANCHORS; a++) {
+			float rel[16];
+
+			if (!have[a] || a == index[i])
+				continue;
+			mat_mul(rel, from[a], list[i]->mv);
+			rigid_relation_add(&g_rigid[index[i]].to[a], rel);
+		}
+	}
+	g_rigid_frames++;
+	if (g_rigid_groups == was)
+		return;
+	log_msg("rigid parts: %d groups, %d of the bike and %d after the rider in this frame", g_rigid_groups, bike, n - bike);
+	/* What was drawn before the rider, nearest first, to see where the bike was taken to end. */
+	for (i = 0; i < ring && i < 10; i++) {
+		const rigid_seen *s = &g_rigid_before[(g_rigid_before_n - 1 - i) % RIGID_BEFORE];
+		int last = min(s->n, RIGID_GROUP_DRAWS) - 1;
+
+		log_msg("rigid parts: before the rider %d: vao %u..%u, %d draws, %s, group %d", i, s->draw[0].vao, s->draw[last].vao, s->n,
+			rigid_is_near(s->mv, RIGID_RADIUS) ? "near" : "far", s->n <= RIGID_GROUP_DRAWS ? rigid_group_find(s) : -1);
 	}
 }
+
+/* Places every group the game left out this frame. Returns whether there is one. */
+static BOOL rigid_place(void)
+{
+	static float anchor[RIGID_ANCHORS][16];
+	const rigid_seen *list[RIGID_BEFORE + RIGID_AFTER];
+	BOOL have[RIGID_ANCHORS], any = FALSE;
+	int index[RIGID_BEFORE + RIGID_AFTER];
+	int ring = min(g_rigid_before_n, RIGID_BEFORE), n = 0, frame = -1, i, a;
+
+	for (i = 0; i < ring; i++)
+		list[n++] = &g_rigid_before[i];
+	for (i = 0; i < g_rigid_after_n; i++)
+		list[n++] = &g_rigid_after[i];
+	for (i = 0; i < n; i++)
+		index[i] = list[i]->n <= RIGID_GROUP_DRAWS ? rigid_group_find(list[i]) : -1;
+	rigid_anchors(anchor, have, list, index, n);
+
+	/* The frame is the first part of a bike the game uploads and draws. */
+	for (i = 0; i < g_rigid_groups; i++)
+		if (!g_rigid[i].after && (frame < 0 || g_rigid[i].draw[0].vao < g_rigid[frame].draw[0].vao))
+			frame = i;
+
+	for (i = 0; i < g_rigid_groups; i++) {
+		rigid_group *g = &g_rigid[i];
+		float least = 1e30f;
+		int pick = -1;
+
+		g->hidden = FALSE;
+		if (have[i] || rigid_drawn_lately(g))
+			continue;
+		for (a = 0; a < RIGID_ANCHORS; a++) {
+			const rigid_relation *r = &g->to[a];
+			BOOL bone = a >= RIGID_MAX_GROUPS;
+			float cost;
+
+			if (!have[a] || r->n < RIGID_MIN_SAMPLES || r->score / r->n > RIGID_MAX_DRIFT)
+				continue;
+			/* A bike part only goes where its own bike is drawn: on a bone, another bike's would follow this rider. */
+			if (g->after ? !bone : bone || g_rigid[a].after)
+				continue;
+			/*
+			 Half a second of chase view has to do, and in it, or in the air, everything is still against
+			 everything. Then a bike part goes with the frame and the helmet with a bone, and among the
+			 bones the steadiest wins however small its lead: the helmet's own is exact, and nearness
+			 picked a hand over it. The frame is what first person keeps that doesn't steer or spring.
+			*/
+			cost = r->score / r->n + ((g->after ? bone : a == frame) ? 0.0f : RIGID_BIAS) +
+			       (float)sqrt(v_dot(r->mean + 12, r->mean + 12)) * 1e-6f;
+			if (cost < least) {
+				least = cost;
+				pick = a;
+			}
+		}
+		if (pick < 0)
+			continue;
+		if (pick != g->anchor) {
+			log_msg("rigid parts: group %d (vao %u, %d draws) follows %s %d, %.5f units off its average a frame over %d frames", i,
+				g->draw[0].vao, g->n, pick < RIGID_MAX_GROUPS ? "group" : "bone",
+				pick < RIGID_MAX_GROUPS ? pick : pick - RIGID_MAX_GROUPS, g->to[pick].score / g->to[pick].n, (int)g->to[pick].n);
+			g->anchor = pick;
+		}
+		mat_mul(g->placed, anchor[pick], g->to[pick].best);
+		g->hidden = any = TRUE;
+	}
+	return any;
+}
+
 static unsigned long long g_view_sig, g_view_last_sig;
+
+static void rigid_forget(void)
+{
+	g_rigid_groups = g_rigid_frames = 0;
+}
 
 /* Out of the race the next bike may differ, so nothing carries over. */
 static void full_meshes_forget(void)
 {
 	memset(g_full, 0, sizeof g_full);
-	memset(g_rigid_score, 0, sizeof g_rigid_score);
-	memset(g_rigid, 0, sizeof g_rigid);
-	g_rigid_parts = g_rigid_frames = 0;
+	g_full_n = 0;
+	g_full_total = 0;
+	g_trimmed_vao = 0;
+	rigid_forget();
 	g_view_last_sig = 0;
 }
 
-/* This frame's skinned draws. Their signature changes with the view and the rider. */
+/* This frame's rider draws. Their signature changes with the view and the rider. */
 static GLsizei g_view_count[MAX_FULL_MESHES];
 static GLuint g_view_vao[MAX_FULL_MESHES];
 static GLenum g_view_type[MAX_FULL_MESHES];
@@ -1731,23 +1916,27 @@ static const void *g_view_indices[MAX_FULL_MESHES];
 static BOOL g_rigid_needed_was;
 
 /*
- The game uploads a rider's meshes in fixed groups, so a trimmed group has its
+ The game uploads a rider's meshes in fixed groups, so a trimmed set often has its
  full version a little earlier in the VAO order: the same parts, some longer.
- That finds the full rider without waiting for chase view to show it.
+ That finds the full rider without waiting for chase view to show it. A rider
+ whose two sets differ in how many meshes they have is only found in chase view.
 */
-#define FULL_SEARCH 64
-
-static void full_group_search(int first, int n)
+static void full_set_search(int n)
 {
-	GLuint vao = g_view_vao[first];
+	GLuint vao = g_view_vao[0];
 	int d, i;
 
+	for (i = 1; i < n; i++)
+		if (g_view_vao[i] != vao + i)
+			return;
+	if (vao + n > MAX_IDS)
+		return;
 	for (d = n; d <= FULL_SEARCH && (GLuint)d < vao; d++) {
 		int longer = 0, same = 0;
 
 		for (i = 0; i < n; i++) {
-			size_t size = g_view_type[first + i] == GL_UNSIGNED_INT ? 4 : 2;
-			size_t need = g_view_count[first + i] * size, have = g_mesh_bytes[vao + i - d];
+			size_t size = g_view_type[i] == GL_UNSIGNED_INT ? 4 : 2;
+			size_t need = g_view_count[i] * size, have = g_mesh_bytes[vao + i - d];
 
 			if (have < need)
 				break;
@@ -1759,49 +1948,77 @@ static void full_group_search(int first, int n)
 		if (i < n || !longer || !same)
 			continue;
 
-		log_msg("full rider %u..%u found %d VAOs before the trimmed one", vao, vao + n - 1, d);
+		g_full_total = 0;
 		for (i = 0; i < n; i++) {
-			size_t size = g_view_type[first + i] == GL_UNSIGNED_INT ? 4 : 2;
-			GLsizei count = (GLsizei)(g_mesh_bytes[vao + i - d] / size);
-			full_mesh *f = &g_full[first + i];
+			size_t size = g_view_type[i] == GL_UNSIGNED_INT ? 4 : 2;
+			full_mesh *f = &g_full[i];
 
-			if (count > f->count) {
-				f->vao = vao + i - d;
-				f->count = count;
-				f->type = g_view_type[first + i];
-				f->indices = g_view_indices[first + i];
-			}
+			f->vao = vao + i - d;
+			f->count = (GLsizei)(g_mesh_bytes[vao + i - d] / size);
+			f->type = g_view_type[i];
+			f->indices = g_view_indices[i];
+			g_full_total += f->count;
 		}
+		g_trimmed_vao = vao;
+		log_msg("full rider %u..%u found %d VAOs before the trimmed one", vao - d, vao - d + n - 1, d);
 		return;
 	}
 }
 
-static void full_groups_search(void)
+/* Called when the rider's draws change: a view switch, or another rider. */
+static void full_set_update(void)
 {
-	int n = min(g_skinned_index, MAX_FULL_MESHES), first = 0, i;
+	int n = min(g_skinned_index, MAX_FULL_MESHES), i, j;
+	GLuint vao = g_view_vao[0];
+	long long total = 0;
+	BOOL shared = FALSE, same_rider;
 
-	for (i = 1; i <= n; i++) {
-		if (i < n && g_view_vao[i] == g_view_vao[i - 1] + 1 && g_view_vao[i] < MAX_IDS)
-			continue;
-		full_group_search(first, i - first);
-		first = i;
+	if (!n || (g_full_n && vao == g_full[0].vao) || (g_full_n && vao == g_trimmed_vao))
+		return;
+	for (i = 0; i < n; i++) {
+		total += g_view_count[i];
+		for (j = 0; j < g_full_n; j++)
+			shared |= g_full[j].count == g_view_count[i];
 	}
+	/* The full set's trimmed version: uploaded soon after it, smaller, and partly the same meshes. */
+	if (g_full_n && vao > g_full[0].vao && vao - g_full[0].vao <= FULL_SEARCH && total < g_full_total && shared) {
+		g_trimmed_vao = vao;
+		log_msg("trimmed rider: %d meshes from vao %u, %lld indices", n, vao, total);
+		return;
+	}
+
+	/* A fuller set of the rider known so far, which makes that one the trimmed set, or another rider. */
+	same_rider = g_full_n && g_full[0].vao > vao && g_full[0].vao - vao <= FULL_SEARCH && total > g_full_total && shared;
+	g_trimmed_vao = same_rider ? g_full[0].vao : 0;
+	if (g_full_n && !same_rider)
+		rigid_forget();
+	for (i = 0; i < n; i++) {
+		g_full[i].vao = g_view_vao[i];
+		g_full[i].count = g_view_count[i];
+		g_full[i].type = g_view_type[i];
+		g_full[i].indices = g_view_indices[i];
+	}
+	g_full_n = n;
+	g_full_total = total;
+	log_msg("full rider: %d meshes from vao %u, %lld indices", n, vao, total);
+	if (!same_rider)
+		full_set_search(n);
 }
 
 /*
- Joining in first person has nothing to place these parts with, so what chase view
- taught is kept per rider, for the next time. Parts are stored as offsets, the VAO
- numbers change with the track.
+ Joining in first person has nothing to place the hidden parts with, or to tell
+ the full rider from, so what chase view taught is kept per rider, for the next
+ time. Meshes are stored as offsets, the VAO numbers change with the track.
 */
 #define RIGID_MIN_FRAMES 60
-#define RIGID_FILE_VERSION 3
+#define RIGID_FILE_VERSION 6
 
 typedef struct {
-	int offset, group, bone;
+	int offset;
 	GLsizei count;
 	GLenum type;
-	size_t indices;
-	float ambient[4], relative[16];
+	long long indices;
+	float ambient[4];
 } rigid_saved;
 
 static void rigid_file_name(wchar_t *path, unsigned long long sig)
@@ -1812,89 +2029,126 @@ static void rigid_file_name(wchar_t *path, unsigned long long sig)
 	log_path(path, name);
 }
 
+static void rigid_saved_write(FILE *f, GLuint vao, GLsizei count, GLenum type, const void *indices, const float *ambient)
+{
+	rigid_saved s = { 0 };
+
+	s.offset = (int)vao - (int)g_view_vao[0];
+	s.count = count;
+	s.type = type;
+	s.indices = (long long)(size_t)indices;
+	if (ambient)
+		memcpy(s.ambient, ambient, sizeof s.ambient);
+	fwrite(&s, sizeof s, 1, f);
+}
+
+/* A rider with the same trimmed meshes can wear another helmet, so each mesh has to be the size it was. */
+static GLuint rigid_saved_read(FILE *f, rigid_saved *s)
+{
+	int vao;
+
+	if (fread(s, sizeof *s, 1, f) != 1)
+		return 0;
+	vao = (int)g_view_vao[0] + s->offset;
+	if (vao <= 0 || vao >= MAX_IDS || (size_t)s->count * (s->type == GL_UNSIGNED_INT ? 4 : 2) != g_mesh_bytes[vao])
+		return 0;
+	return (GLuint)vao;
+}
+
 static void rigid_save(void)
 {
-	int header[2] = { RIGID_FILE_VERSION, g_rigid_parts }, i;
+	int header[4] = { RIGID_FILE_VERSION, g_rigid_groups, RIGID_ANCHORS, g_full_n }, i, d;
 	wchar_t path[MAX_PATH];
 	FILE *f;
 
 	if (g_rigid_frames < RIGID_MIN_FRAMES)
 		return;
-	rigid_file_name(path, g_view_last_sig);
+	rigid_file_name(path, g_view_last_sig * 1000003 + rigid_bike_sig());
 	if (_wfopen_s(&f, path, L"wb"))
 		return;
 	fwrite(header, sizeof header, 1, f);
-	fwrite(g_rigid_score, sizeof g_rigid_score, 1, f);
-	for (i = 0; i < g_rigid_parts; i++) {
-		const rigid_part *p = &g_rigid[i];
-		rigid_saved s = { 0 };
+	for (i = 0; i < g_full_n; i++)
+		rigid_saved_write(f, g_full[i].vao, g_full[i].count, g_full[i].type, g_full[i].indices, NULL);
+	for (i = 0; i < g_rigid_groups; i++) {
+		const rigid_group *g = &g_rigid[i];
 
-		s.offset = (int)p->vao - (int)g_view_vao[0];
-		s.group = p->group;
-		s.bone = g_rigid_bone[p->group];
-		s.count = p->count;
-		s.type = p->type;
-		s.indices = (size_t)p->indices;
-		memcpy(s.ambient, p->ambient, sizeof s.ambient);
-		memcpy(s.relative, p->relative[s.bone], sizeof s.relative);
-		fwrite(&s, sizeof s, 1, f);
+		fwrite(&g->n, sizeof g->n, 1, f);
+		fwrite(&g->after, sizeof g->after, 1, f);
+		for (d = 0; d < g->n; d++)
+			rigid_saved_write(f, g->draw[d].vao, g->draw[d].count, g->draw[d].type, g->draw[d].indices, g->draw[d].ambient);
+		fwrite(g->to, sizeof g->to, 1, f);
 	}
 	fclose(f);
-	log_msg("rigid parts: saved %d", g_rigid_parts);
+	log_msg("rigid parts: saved %d groups and a full rider of %d meshes", g_rigid_groups, g_full_n);
 }
 
 static void rigid_load(void)
 {
-	static rigid_part parts[RIGID_MAX_PARTS];
-	static float score[RIGID_MAX_GROUPS][POSE_MAX_BONES];
-	int header[2], i;
+	static rigid_group groups[RIGID_MAX_GROUPS];
+	static full_mesh full[MAX_FULL_MESHES];
+	long long total = 0;
+	int header[4], i = 0, d;
 	wchar_t path[MAX_PATH];
+	BOOL ok;
 	FILE *f;
 
-	rigid_file_name(path, g_view_sig);
+	rigid_file_name(path, g_view_sig * 1000003 + rigid_bike_sig());
 	if (_wfopen_s(&f, path, L"rb"))
 		return;
-	memset(parts, 0, sizeof parts);
-	if (fread(header, sizeof header, 1, f) != 1 || header[0] != RIGID_FILE_VERSION ||
-	    header[1] <= 0 || header[1] > RIGID_MAX_PARTS || fread(score, sizeof score, 1, f) != 1) {
-		fclose(f);
-		return;
-	}
-	for (i = 0; i < header[1]; i++) {
+	ok = fread(header, sizeof header, 1, f) == 1 && header[0] == RIGID_FILE_VERSION && header[1] > 0 &&
+	     header[1] <= RIGID_MAX_GROUPS && header[2] == RIGID_ANCHORS && header[3] >= 0 && header[3] <= MAX_FULL_MESHES;
+	for (i = 0; ok && i < header[3]; i++) {
 		rigid_saved s;
-		int vao;
 
-		if (fread(&s, sizeof s, 1, f) != 1 || s.group < 0 || s.group >= RIGID_MAX_GROUPS ||
-		    s.bone < 0 || s.bone >= POSE_MAX_BONES)
-			break;
-		vao = (int)g_view_vao[0] + s.offset;
-		/* A rider with the same trimmed meshes can wear another helmet. */
-		if (vao <= 0 || vao >= MAX_IDS || (size_t)s.count * (s.type == GL_UNSIGNED_INT ? 4 : 2) != g_mesh_bytes[vao])
-			break;
-		parts[i].vao = vao;
-		parts[i].count = s.count;
-		parts[i].type = s.type;
-		parts[i].indices = (const void *)s.indices;
-		parts[i].group = s.group;
-		memcpy(parts[i].ambient, s.ambient, sizeof s.ambient);
-		memcpy(parts[i].relative[s.bone], s.relative, sizeof s.relative);
+		full[i].vao = rigid_saved_read(f, &s);
+		full[i].count = s.count;
+		full[i].type = s.type;
+		full[i].indices = (const void *)(size_t)s.indices;
+		total += s.count;
+		ok = full[i].vao != 0;
+	}
+	memset(groups, 0, sizeof groups);
+	for (i = 0; ok && i < header[1]; i++) {
+		rigid_group *g = &groups[i];
+
+		ok = fread(&g->n, sizeof g->n, 1, f) == 1 && g->n > 0 && g->n <= RIGID_GROUP_DRAWS &&
+		     fread(&g->after, sizeof g->after, 1, f) == 1;
+		for (d = 0; ok && d < g->n; d++) {
+			rigid_saved s;
+
+			g->draw[d].vao = rigid_saved_read(f, &s);
+			g->draw[d].count = s.count;
+			g->draw[d].type = s.type;
+			g->draw[d].indices = (const void *)(size_t)s.indices;
+			memcpy(g->draw[d].ambient, s.ambient, sizeof s.ambient);
+			ok = g->draw[d].vao != 0;
+		}
+		ok = ok && fread(g->to, sizeof g->to, 1, f) == 1;
+		g->anchor = -1;
 	}
 	fclose(f);
-	if (i < header[1]) {
+	if (!ok) {
 		log_msg("rigid parts: saved file doesn't match this rider");
 		return;
 	}
-	memcpy(g_rigid, parts, sizeof parts);
-	memcpy(g_rigid_score, score, sizeof score);
-	g_rigid_parts = header[1];
-	log_msg("rigid parts: loaded %d", g_rigid_parts);
+	memcpy(g_rigid, groups, sizeof groups);
+	g_rigid_groups = header[1];
+	g_rigid_frames = 0;
+	if (header[3] && total > g_full_total && full[0].vao != g_view_vao[0]) {
+		memcpy(g_full, full, sizeof full);
+		g_full_n = header[3];
+		g_full_total = total;
+		g_trimmed_vao = g_view_vao[0];
+	}
+	log_msg("rigid parts: loaded %d groups, full rider of %d meshes from vao %u", g_rigid_groups, g_full_n, g_full[0].vao);
 }
+
 static void view_update(void)
 {
 	g_view_settled = g_view_sig && g_view_sig == g_view_last_sig;
 	if (g_view_sig && g_view_sig != g_view_last_sig) {
-		full_groups_search();
-		if (!g_rigid_parts)
+		full_set_update();
+		if (!g_rigid_groups)
 			rigid_load();
 		g_view_last_sig = g_view_sig;
 	}
@@ -1939,30 +2193,19 @@ static void view_state_log(void)
 
 static void rigid_pose_commit(void)
 {
-	BOOL chase = rigid_chase_view();
-
 	view_update();
-	if (chase && g_view_settled)
+	/* Only the full rider's view shows every part. A rider with no trimmed set teaches nothing new in first person, and no harm. */
+	if (g_rider_seen && !g_frame_trimmed && g_view_settled && g_pose_bones > 0)
 		rigid_update();
-	g_rigid_needed = g_rider_seen && !chase && g_rigid_parts > 0 && g_pose_bones > 0;
-	g_frame_trimmed = g_rider_seen = FALSE;
-	g_rider_run = RIDER_NOT_STARTED;
-	g_rigid_before_n = g_rigid_after_n = 0;
-	if (g_rigid_needed) {
-		int b;
-
-		g_replay_bones = g_pose_bones;
-		for (b = 0; b < g_pose_bones; b++) {
-			float bone[16];
-
-			bone_matrix(bone, b);
-			mat_mul(g_replay_pose[b], g_pose_mv, bone);
-		}
-		rigid_pick_bones();
-	}
+	g_rigid_needed = g_rider_seen && g_rigid_groups > 0 && g_pose_bones > 0 && rigid_place();
+	/* While this frame's draws are still known: the file is named after the bike's. */
 	if (g_rigid_needed && !g_rigid_needed_was)
 		rigid_save();
 	g_rigid_needed_was = g_rigid_needed;
+	g_frame_trimmed = g_rider_seen = FALSE;
+	g_rider_run = RIDER_NOT_STARTED;
+	g_rigid_before_n = g_rigid_after_n = 0;
+	g_rigid_open = NULL;
 }
 
 /*
@@ -1985,8 +2228,10 @@ static BOOL rider_draw(void)
 
 static void skinned_draw_seen(int slot, GLsizei count, GLenum type, const void *indices)
 {
-	if (slot == 1)
+	if (slot == 1) {
 		pose_capture();
+		g_frame_trimmed = g_full_n && g_cur_vao == g_trimmed_vao;
+	}
 	if (slot && slot <= MAX_FULL_MESHES) {
 		g_view_count[slot - 1] = count;
 		g_view_vao[slot - 1] = g_cur_vao;
@@ -1994,9 +2239,8 @@ static void skinned_draw_seen(int slot, GLsizei count, GLenum type, const void *
 		g_view_indices[slot - 1] = indices;
 		g_view_sig = g_view_sig * 1000003 + count;
 	}
-	if (slot && slot <= MAX_FULL_MESHES && count < g_full[slot - 1].count)
-		g_frame_trimmed = TRUE;
 	g_rider_seen = TRUE;
+	g_rigid_open = NULL;
 }
 enum { DRAW_NO_SHADOW, DRAW_STATIC, DRAW_DYNAMIC };
 
@@ -3174,7 +3418,7 @@ HOOK(void, glDrawElements, (GLenum mode, GLsizei count, GLenum type, const void 
 	    g_cur_fb, g_cur_prog, (size_t)indices, g_cur_prog == g_model_prog ? g_cur_nbones : 0, g_cur_vao, g_cur_vbo, g_cur_ibo);
 	{
 		int kind = shadow_draw_kind();
-		int slot = kind == DRAW_DYNAMIC && rider_draw() ? full_mesh_slot(count, type, indices) : 0;
+		int slot = kind == DRAW_DYNAMIC && rider_draw() ? full_mesh_slot() : 0;
 		const mesh_sphere *sphere = kind == DRAW_STATIC && g_cur_prog == g_model_prog ? mesh_sphere_current() : NULL;
 
 		if (slot)
@@ -3986,12 +4230,16 @@ HOOK(void, glDeleteVertexArrays, (GLsizei n, const GLuint *arrays))
 			g_mesh_bytes[arrays[i]] = 0;
 			g_mesh_sphere_state[arrays[i]] = SPHERE_UNKNOWN;
 		}
-		for (j = 0; j < g_rigid_parts; j++)
-			if (g_rigid[j].vao == arrays[i])
-				g_rigid_parts = 0;
-		for (j = 0; j < MAX_FULL_MESHES; j++)
+		for (j = 0; j < g_rigid_groups; j++) {
+			int d;
+
+			for (d = 0; d < g_rigid[j].n; d++)
+				if (g_rigid[j].draw[d].vao == arrays[i])
+					rigid_forget();
+		}
+		for (j = 0; j < g_full_n; j++)
 			if (g_full[j].vao == arrays[i])
-				memset(&g_full[j], 0, sizeof g_full[j]);
+				full_meshes_forget();
 	}
 	real_glDeleteVertexArrays(n, arrays);
 
@@ -4125,6 +4373,29 @@ static BOOL sphere_on_map(int cascade, const float *mv, const mesh_sphere *s)
 	       fabs(m[1] * x + m[5] * y + m[9] * z + m[13]) <= 1.02f + r * (float)sqrt(m[1] * m[1] + m[5] * m[5] + m[9] * m[9]);
 }
 
+/*
+ The full rider's meshes, in the pose the trimmed ones were about to be drawn in. Whatever
+ texture is bound belongs to one trimmed mesh, and its alpha could cut holes in the others.
+*/
+static void draw_full_rider(GLenum mode, GLuint back)
+{
+	uni_entry *tex = model_uniform("u_tex");
+	GLint unit = tex ? tex->value : 0, active = GL_TEXTURE0, bound = 0;
+	int i;
+
+	my_glGetIntegerv(0x84E0 /* GL_ACTIVE_TEXTURE */, &active);
+	real_glActiveTexture(GL_TEXTURE0 + unit);
+	my_glGetIntegerv(0x8069 /* GL_TEXTURE_BINDING_2D */, &bound);
+	real_glBindTexture(GL_TEXTURE_2D, g_white_tex);
+	for (i = 0; i < g_full_n; i++) {
+		real_glBindVertexArray(g_full[i].vao);
+		real_glDrawElements(mode, g_full[i].count, g_full[i].type, g_full[i].indices);
+	}
+	real_glBindTexture(GL_TEXTURE_2D, bound);
+	real_glActiveTexture(active);
+	real_glBindVertexArray(back);
+}
+
 static void replay_stream(const unsigned char *stream, size_t used, GLuint prog, GLuint vao, int cascade)
 {
 	BOOL state_only = cascade == REPLAY_STATE_ONLY;
@@ -4132,6 +4403,7 @@ static void replay_stream(const unsigned char *stream, size_t used, GLuint prog,
 	GLint offset_real = offset ? offset->real : -1, scale_real = scale ? scale->real : -1;
 	const float *block_offset = NULL, *model_view = NULL;
 	float block_scale = 0.0f;
+	BOOL trimmed = FALSE;
 	size_t at = 0;
 
 	while (at < used) {
@@ -4186,12 +4458,12 @@ static void replay_stream(const unsigned char *stream, size_t used, GLuint prog,
 				real_glUniformMatrix4fv(c->a, c->b, (GLboolean)c->c, f);
 			break;
 		case REC_DRAWELEMENTS:
-			if (c->d && g_full[c->d - 1].count > c->b) {
-				const full_mesh *m = &g_full[c->d - 1];
-
-				real_glBindVertexArray(m->vao);
-				real_glDrawElements(c->a, m->count, m->type, m->indices);
-				real_glBindVertexArray(vao);
+			/* The trimmed rider's first draw becomes the whole full rider, and the rest of it is left out. */
+			if (c->d == 1)
+				trimmed = g_full_n && vao == g_trimmed_vao;
+			if (c->d && trimmed) {
+				if (c->d == 1)
+					draw_full_rider(c->a, vao);
 			} else if (c->e) {
 				real_glDrawElements(c->a, c->b, c->c, (const void *)c->ptr);
 			}
@@ -4221,21 +4493,23 @@ static void draw_rigid(int cascade)
 	real_glActiveTexture(GL_TEXTURE0 + unit);
 	real_glBindTexture(GL_TEXTURE_2D, g_white_tex);
 
-	for (i = 0; i < g_rigid_parts; i++) {
-		const rigid_part *p = &g_rigid[i];
-		int bone = g_rigid_bone[p->group];
-		float placed[16];
+	for (i = 0; i < g_rigid_groups; i++) {
+		const rigid_group *g = &g_rigid[i];
+		int d;
 
-		/* The front of the bike is still drawn, it would only double up. */
-		if (g_vao_frame[p->vao] && g_frame - g_vao_frame[p->vao] <= 2)
+		/* What the game still draws would only double up. */
+		if (!g->hidden || rigid_drawn_lately(g))
 			continue;
-		mat_mul(placed, g_replay_pose[bone], p->relative[bone]);
-		real_glUniformMatrix4fv(mv->real, 1, 0, placed);
-		/* By now it holds the frame's last material, whose alpha could discard the part. */
-		if (ambient && ambient->real >= 0)
-			real_glUniform4fv(ambient->real, 1, p->ambient);
-		real_glBindVertexArray(p->vao);
-		real_glDrawElements(GL_TRIANGLES, p->count, p->type, p->indices);
+		real_glUniformMatrix4fv(mv->real, 1, 0, g->placed);
+		for (d = 0; d < g->n; d++) {
+			const rigid_draw *p = &g->draw[d];
+
+			/* By now it holds the frame's last material, whose alpha could discard the part. */
+			if (ambient && ambient->real >= 0)
+				real_glUniform4fv(ambient->real, 1, p->ambient);
+			real_glBindVertexArray(p->vao);
+			real_glDrawElements(GL_TRIANGLES, p->count, p->type, p->indices);
+		}
 	}
 
 	if (nb->real >= 0)
