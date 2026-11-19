@@ -745,7 +745,7 @@ static BOOL v_normalize(float *v)
 */
 #define CLOCK_TRACK 0
 #define CLOCK_STEPS 96
-#define CLOCK_DEFAULT 53	/* 13:00 */
+#define CLOCK_DEFAULT CLOCK_TRACK	/* the track's own light */
 #define LATITUDE 45.0f
 #define DECLINATION 15.0f
 #define MOON_TAKES_OVER -3.0f	/* the sun's height when the light becomes the moon's */
@@ -4129,7 +4129,7 @@ static void load_live_settings(void)
 {
 	int old_clock = clock_from_old_settings();
 
-	/* 13:00 unless an old Day to Night or Sun Height setting says otherwise. */
+	/* The track's own light unless an old Day to Night or Sun Height setting says otherwise. */
 	g_cfg_clock = min(pack_int(L"clock", old_clock != CLOCK_TRACK ? old_clock : CLOCK_DEFAULT), CLOCK_STEPS);
 	g_cfg_fog = pack_int(L"fog", 5);
 	g_cfg_parallax = pack_int(L"parallax", 100);
