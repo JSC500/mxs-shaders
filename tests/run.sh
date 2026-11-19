@@ -125,6 +125,31 @@ check "a data path with a space is refused with a clear message" "[ $r != 0 ] &&
 out5=$(cd "$out" && MX_HOME=/nonexistent "$game/mxs-shaders.sh" 2>&1); r=$?
 check "a missing game folder asks for MX_HOME" "[ $r != 0 ] && echo \"\$out5\" | grep -q MX_HOME="
 
+echo "6. terrain and rider draws through the shadow pass without post"
+# Only the game's own terrain and rider draws reach the shadow pass, so the stand-in race
+# scene in tests/scene_mxbin.c draws them. msaa=0 takes the fallback that fills the map
+# from last frame's recording, where the state restore has to come from this frame's.
+scene="$out/scene"
+scenegame="$scene/MX Simulator"
+scenexdg="$scene/xdg"
+sceneini="$scenexdg/mxs-shaders/mxs-shaders.ini"
+slog="$scenexdg/mxs-shaders/mxs-shaders.log"
+mkdir -p "$scenegame" "$scenexdg/mxs-shaders"
+gcc -O1 -Wall -Werror=incompatible-pointer-types -Werror=implicit-function-declaration \
+	-o "$scenegame/mxbin" tests/scene_mxbin.c $L/libGL.so.1 -lX11 || exit 1
+cp "$lib" mxs-shaders.sh "$scenegame/"
+printf '[mxs-shaders]\nshadow_size=1024\nmsaa=0\n' > "$sceneini"
+(cd "$scenegame" && XDG_DATA_HOME="$scenexdg" ./mxs-shaders.sh >"$scene/game.txt" 2>&1)
+sed 's/^/  scene: /' "$scene/game.txt"
+check "the height texture is still bound where the game put it after the shadow pass" \
+	"grep -q 'scene: height texture kept on all frames' '$scene/game.txt'"
+check "the no-post fallback ran, filling the map from last frame's draws" \
+	"grep -q '^shadows: no post pass, so the game' '$slog'"
+check "the trimmed rider is told from the full one" "grep -q '^trimmed rider:' '$slog'"
+check "first person's shadow draws the full rider in the trimmed set's place" \
+	"grep -q '^shadows: first person, the full rider stands in for the trimmed set' '$slog'"
+check "no failures or GL errors on the shadow path" "! grep -qiE 'failed|^GL error|^glGetError' '$slog'"
+
 kill $xpid 2>/dev/null
 [ $fail = 0 ] && echo "all tests passed" || echo "SOME TESTS FAILED"
 exit $fail
