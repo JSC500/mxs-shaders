@@ -745,7 +745,7 @@ static BOOL v_normalize(float *v)
 */
 #define CLOCK_TRACK 0
 #define CLOCK_STEPS 96
-#define CLOCK_DEFAULT 53	/* 13:00 */
+#define CLOCK_DEFAULT CLOCK_TRACK	/* the track's own light */
 #define LATITUDE 45.0f
 #define DECLINATION 15.0f
 #define MOON_TAKES_OVER -3.0f	/* the sun's height when the light becomes the moon's */
@@ -1851,7 +1851,8 @@ static BOOL rigid_place(void)
 		int pick = -1;
 
 		g->hidden = FALSE;
-		if (have[i] || rigid_drawn_lately(g))
+		/* A group whose meshes were freed has nothing left to draw. */
+		if (!g->n || have[i] || rigid_drawn_lately(g))
 			continue;
 		for (a = 0; a < RIGID_ANCHORS; a++) {
 			const rigid_relation *r = &g->to[a];
@@ -1897,13 +1898,19 @@ static void rigid_forget(void)
 	g_rigid_groups = g_rigid_frames = 0;
 }
 
-/* Out of the race the next bike may differ, so nothing carries over. */
-static void full_meshes_forget(void)
+/* The full set's meshes are gone, but what was learnt about the rider's parts can stand. */
+static void full_rider_forget(void)
 {
 	memset(g_full, 0, sizeof g_full);
 	g_full_n = 0;
 	g_full_total = 0;
 	g_trimmed_vao = 0;
+}
+
+/* Out of the race the next bike may differ, so nothing carries over. */
+static void full_meshes_forget(void)
+{
+	full_rider_forget();
 	rigid_forget();
 	g_view_last_sig = 0;
 }
@@ -2191,11 +2198,22 @@ static void view_state_log(void)
 	flips = 1;
 }
 
+/*
+ Chase view draws every part, so the helmet comes right after the rider and near them,
+ which is what tells the views apart here. Trimmed meshes can't: not all gear has them,
+ and the stored trimmed VAO is often unknown, so gating on it (as a79c48b did) stopped
+ the Linux game learning the parts at all and first person lost the helmet.
+*/
+static BOOL rigid_chase_view(void)
+{
+	return g_rider_seen && g_pose_bones > 0 && g_rigid_after_n > 0 &&
+	       rigid_is_near(g_rigid_after[0].mv, RIGID_RADIUS);
+}
+
 static void rigid_pose_commit(void)
 {
 	view_update();
-	/* Only the full rider's view shows every part. A rider with no trimmed set teaches nothing new in first person, and no harm. */
-	if (g_rider_seen && !g_frame_trimmed && g_view_settled && g_pose_bones > 0)
+	if (rigid_chase_view() && g_view_settled)
 		rigid_update();
 	g_rigid_needed = g_rider_seen && g_rigid_groups > 0 && g_pose_bones > 0 && rigid_place();
 	/* While this frame's draws are still known: the file is named after the bike's. */
@@ -2230,7 +2248,7 @@ static void skinned_draw_seen(int slot, GLsizei count, GLenum type, const void *
 {
 	if (slot == 1) {
 		pose_capture();
-		g_frame_trimmed = g_full_n && g_cur_vao == g_trimmed_vao;
+		g_frame_trimmed = g_full_n && g_cur_vao != g_full[0].vao;
 	}
 	if (slot && slot <= MAX_FULL_MESHES) {
 		g_view_count[slot - 1] = count;
@@ -4111,7 +4129,7 @@ static void load_live_settings(void)
 {
 	int old_clock = clock_from_old_settings();
 
-	/* 13:00 unless an old Day to Night or Sun Height setting says otherwise. */
+	/* The track's own light unless an old Day to Night or Sun Height setting says otherwise. */
 	g_cfg_clock = min(pack_int(L"clock", old_clock != CLOCK_TRACK ? old_clock : CLOCK_DEFAULT), CLOCK_STEPS);
 	g_cfg_fog = pack_int(L"fog", 5);
 	g_cfg_parallax = pack_int(L"parallax", 100);
@@ -4224,22 +4242,33 @@ HOOK(void, glDeleteVertexArrays, (GLsizei n, const GLuint *arrays))
 
 		if (arrays[i] == g_terrain_vao) {
 			g_terrain_count = 0;
+			g_terrain_fill_count = 0;
 			g_terrain_heights = 0;
 		}
 		if (arrays[i] < MAX_IDS) {
 			g_mesh_bytes[arrays[i]] = 0;
 			g_mesh_sphere_state[arrays[i]] = SPHERE_UNKNOWN;
+			g_vao_frame[arrays[i]] = 0;
 		}
+		/*
+		 Only what used it goes: a view switch can free one rider set and keep the other, and
+		 the parts learnt from chase view are still right for the set that stays.
+		*/
 		for (j = 0; j < g_rigid_groups; j++) {
 			int d;
 
 			for (d = 0; d < g_rigid[j].n; d++)
-				if (g_rigid[j].draw[d].vao == arrays[i])
-					rigid_forget();
+				if (g_rigid[j].draw[d].vao == arrays[i]) {
+					memset(&g_rigid[j], 0, sizeof g_rigid[j]);
+					g_rigid[j].anchor = -1;
+					break;
+				}
 		}
 		for (j = 0; j < g_full_n; j++)
-			if (g_full[j].vao == arrays[i])
-				full_meshes_forget();
+			if (g_full[j].vao == arrays[i]) {
+				full_rider_forget();
+				break;
+			}
 	}
 	real_glDeleteVertexArrays(n, arrays);
 
@@ -4396,6 +4425,17 @@ static void draw_full_rider(GLenum mode, GLuint back)
 	real_glBindVertexArray(back);
 }
 
+/* Once: first person's shadow drew the full rider where the game drew the trimmed one. */
+static void log_trimmed_rider(void)
+{
+	static BOOL logged;
+
+	if (logged)
+		return;
+	logged = TRUE;
+	log_msg("shadows: first person, the full rider stands in for the trimmed set");
+}
+
 static void replay_stream(const unsigned char *stream, size_t used, GLuint prog, GLuint vao, int cascade)
 {
 	BOOL state_only = cascade == REPLAY_STATE_ONLY;
@@ -4458,12 +4498,19 @@ static void replay_stream(const unsigned char *stream, size_t used, GLuint prog,
 				real_glUniformMatrix4fv(c->a, c->b, (GLboolean)c->c, f);
 			break;
 		case REC_DRAWELEMENTS:
-			/* The trimmed rider's first draw becomes the whole full rider, and the rest of it is left out. */
+			/*
+			 The trimmed rider's first draw becomes the whole full rider, and the rest of it
+			 is left out. Any set that isn't the full one is the trimmed one: the stored
+			 trimmed VAO is often unknown, and on the native Linux game it never was, which
+			 left the torso out of first person's shadow.
+			*/
 			if (c->d == 1)
-				trimmed = g_full_n && vao == g_trimmed_vao;
+				trimmed = g_full_n && vao != g_full[0].vao;
 			if (c->d && trimmed) {
-				if (c->d == 1)
+				if (c->d == 1) {
+					log_trimmed_rider();
 					draw_full_rider(c->a, vao);
+				}
 			} else if (c->e) {
 				real_glDrawElements(c->a, c->b, c->c, (const void *)c->ptr);
 			}
@@ -4497,8 +4544,8 @@ static void draw_rigid(int cascade)
 		const rigid_group *g = &g_rigid[i];
 		int d;
 
-		/* What the game still draws would only double up. */
-		if (!g->hidden || rigid_drawn_lately(g))
+		/* What the game still draws would only double up. A freed group has nothing to draw. */
+		if (!g->n || !g->hidden || rigid_drawn_lately(g))
 			continue;
 		real_glUniformMatrix4fv(mv->real, 1, 0, g->placed);
 		for (d = 0; d < g->n; d++) {
@@ -4574,17 +4621,25 @@ static void replay_cascade(int cascade, const unsigned char *stream, size_t used
 }
 
 /*
- Draws the map from one recording, then puts the game's state back: the same stream's
- state changes are replayed without its draws, so GL ends where the game left it.
+ Draws the map from one recording, then puts the game's state back: this frame's own
+ state changes are replayed without their draws, so GL ends where the game left it.
+ That has to be this frame's recording and not the one just drawn: the fallback path
+ replays last frame's, and putting that back would undo the sampler units, textures and
+ uniforms the game has just set for the draw it is about to make. It left the terrain
+ height texture unbound that way, so the whole track's mesh drew flat.
 */
 static void shadow_replay(const unsigned char *stream, size_t used, GLuint prog, GLuint vao)
 {
 	GLboolean depth = my_glIsEnabled(GL_DEPTH_TEST), cull = my_glIsEnabled(GL_CULL_FACE);
 	GLboolean clamp = my_glIsEnabled(GL_DEPTH_CLAMP);
+	GLboolean scissor = my_glIsEnabled(GL_SCISSOR_TEST);
 	int c;
 
 	real_glEnable(GL_DEPTH_TEST);
 	real_glDisable(GL_CULL_FACE);
+	/* The game's scissor would clip casters out of the map, block by block. */
+	if (scissor)
+		real_glDisable(GL_SCISSOR_TEST);
 	/* Casters beyond the map's sunward end still shadow everything, so they're flattened onto it. */
 	real_glEnable(GL_DEPTH_CLAMP);
 	real_glDepthMask(1);
@@ -4602,13 +4657,15 @@ static void shadow_replay(const unsigned char *stream, size_t used, GLuint prog,
 		real_glEnable(GL_CULL_FACE);
 	if (!clamp)
 		real_glDisable(GL_DEPTH_CLAMP);
+	if (scissor)
+		real_glEnable(GL_SCISSOR_TEST);
 	real_glDepthMask(g_depth_mask);
 	real_glViewport(g_vp[0], g_vp[1], g_vp[2], g_vp[3]);
 	bind_current_fb();
 
-	real_glUseProgram(prog);
-	real_glBindVertexArray(vao);
-	replay_stream(stream, used, prog, vao, REPLAY_STATE_ONLY);
+	real_glUseProgram(g_rec_start_prog);
+	real_glBindVertexArray(g_rec_start_vao);
+	replay_stream(g_rec, g_rec_used, g_rec_start_prog, g_rec_start_vao, REPLAY_STATE_ONLY);
 	real_glUseProgram(g_cur_prog);
 	real_glBindVertexArray(g_cur_vao);
 	real_glActiveTexture(g_active_unit);
